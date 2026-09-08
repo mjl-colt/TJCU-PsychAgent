@@ -1,4 +1,5 @@
 const AUTH_KEY = "mindbridge.auth";
+const STAGES = ["intake", "understanding", "safety", "context", "response"];
 
 const state = {
   sessionId: null,
@@ -6,7 +7,10 @@ const state = {
   pendingMessage: null,
   sending: false,
   profile: null,
-  modelName: "mock"
+  modelName: "mock",
+  journeyTimers: [],
+  timerInterval: null,
+  startedAt: null
 };
 
 const els = {
@@ -19,27 +23,22 @@ const els = {
   messageInput: document.querySelector("#messageInput"),
   sendButton: document.querySelector("#sendButton"),
   newSession: document.querySelector("#newSession"),
-  sessionBadge: document.querySelector("#sessionBadge")
+  sessionBadge: document.querySelector("#sessionBadge"),
+  charCount: document.querySelector("#charCount"),
+  runtimeTimer: document.querySelector("#runtimeTimer"),
+  sessionIdText: document.querySelector("#sessionIdText"),
+  stages: Object.fromEntries(STAGES.map((name) => [name, document.querySelector(`[data-stage="${name}"]`)]))
 };
 
 function readAuth() {
-  try {
-    return JSON.parse(sessionStorage.getItem(AUTH_KEY) || "null");
-  } catch {
-    return null;
-  }
+  try { return JSON.parse(sessionStorage.getItem(AUTH_KEY) || "null"); } catch { return null; }
 }
 
-function clearAuth() {
-  sessionStorage.removeItem(AUTH_KEY);
-}
+function clearAuth() { sessionStorage.removeItem(AUTH_KEY); }
 
 function authHeader() {
   const auth = readAuth();
-  if (!auth?.token) {
-    window.location.replace("/");
-    return "";
-  }
+  if (!auth?.token) { window.location.replace("/"); return ""; }
   return `Basic ${auth.token}`;
 }
 
@@ -53,9 +52,14 @@ async function api(path, options = {}) {
   return response;
 }
 
-function setPill(el, text, tone = "ok") {
-  el.textContent = text;
-  el.className = `pill ${tone}`;
+function setServiceState(text, tone = "ok") {
+  els.serviceState.innerHTML = `<i></i>${text}`;
+  els.serviceState.className = `status-dot ${tone}`;
+}
+
+function setSessionState(text, tone = "ready") {
+  els.sessionBadge.innerHTML = `<i></i>${text}`;
+  els.sessionBadge.className = `session-badge ${tone}`;
 }
 
 function isAdmin(profile) {
@@ -63,16 +67,17 @@ function isAdmin(profile) {
 }
 
 function displayModel(model) {
-  return (model || "").includes("mindbridge-qwen2.5-7b-ft") ? "微调 Qwen2.5-7B" : model;
+  if ((model || "").includes("mindbridge-qwen2.5-7b-ft")) return "微调 Qwen2.5-7B";
+  return model || "mock";
 }
 
 async function checkHealth() {
   try {
     const response = await fetch("/actuator/health");
     const body = await response.json();
-    setPill(els.serviceState, body.status === "UP" ? "服务正常" : `服务 ${body.status}`, body.status === "UP" ? "ok" : "danger");
+    setServiceState(body.status === "UP" ? "服务在线" : `服务 ${body.status}`, body.status === "UP" ? "ok" : "danger");
   } catch {
-    setPill(els.serviceState, "服务 DOWN", "danger");
+    setServiceState("服务离线", "danger");
   }
 }
 
@@ -80,12 +85,10 @@ async function loadProfile() {
   try {
     const response = await api("/api/profile");
     const profile = await response.json();
-    if (isAdmin(profile)) {
-      window.location.replace("/admin.html");
-      return null;
-    }
+    if (isAdmin(profile)) { window.location.replace("/admin.html"); return null; }
     state.profile = profile;
     els.activeAccount.textContent = profile.displayName || profile.username;
+    document.querySelector(".avatar").textContent = (profile.displayName || profile.username || "同").slice(0, 1);
     return profile;
   } catch {
     clearAuth();
@@ -98,34 +101,31 @@ async function loadAgentStatus() {
   const response = await api("/api/agent/status");
   const status = await response.json();
   state.modelName = status.model || "mock";
-  if (status.realModelEnabled) {
-    setPill(els.modelState, `${status.provider} / ${displayModel(state.modelName)}`, "ok");
-  } else {
-    setPill(els.modelState, "mock 演示", "warn");
-  }
+  els.modelState.textContent = status.realModelEnabled ? `${status.provider} · ${displayModel(state.modelName)}` : "Mock 演示模型";
+  els.modelState.classList.toggle("live", Boolean(status.realModelEnabled));
 }
 
 function clearWelcome() {
-  const empty = els.messages.querySelector(".empty");
-  if (empty) empty.remove();
+  els.messages.querySelector(".welcome-message")?.remove();
 }
 
 function addMessage(role, content) {
   clearWelcome();
   const row = document.createElement("article");
   row.className = `message ${role}`;
-  row.innerHTML = `
-    <div class="message-role">${role === "user" ? "我" : "心理ai"}</div>
-    <div class="bubble"></div>
-  `;
-  row.querySelector(".bubble").textContent = content;
+  const roleName = role === "user" ? "我" : "心理ai";
+  row.innerHTML = `<div class="message-role"><span>${role === "user" ? "我" : "心"}</span>${roleName}</div><div class="bubble"></div>`;
+  const bubble = row.querySelector(".bubble");
+  bubble.textContent = content;
+  if (role === "assistant" && !content) bubble.innerHTML = '<span class="typing"><i></i><i></i><i></i></span>';
   els.messages.append(row);
   els.messages.scrollTop = els.messages.scrollHeight;
-  return row.querySelector(".bubble");
+  return bubble;
 }
 
 function parseSse(buffer, onEvent) {
-  const parts = buffer.split("\n\n");
+  const normalized = buffer.replaceAll("\r\n", "\n");
+  const parts = normalized.split("\n\n");
   const rest = parts.pop();
   for (const part of parts) {
     const dataLine = part.split("\n").find((line) => line.startsWith("data: "));
@@ -135,21 +135,62 @@ function parseSse(buffer, onEvent) {
   return rest;
 }
 
+function setStage(name, status) {
+  const node = els.stages[name];
+  if (!node) return;
+  node.classList.remove("active", "done");
+  if (status !== "waiting") node.classList.add(status);
+  node.querySelector(".node-state").textContent = status === "active" ? "运行中" : status === "done" ? "完成" : "等待";
+}
+
+function resetJourney() {
+  state.journeyTimers.forEach(clearTimeout);
+  state.journeyTimers = [];
+  clearInterval(state.timerInterval);
+  state.timerInterval = null;
+  state.startedAt = null;
+  STAGES.forEach((stage) => setStage(stage, "waiting"));
+  els.runtimeTimer.textContent = "0.0s";
+}
+
+function startJourney() {
+  resetJourney();
+  state.startedAt = performance.now();
+  setStage("intake", "active");
+  state.timerInterval = setInterval(() => {
+    els.runtimeTimer.textContent = `${((performance.now() - state.startedAt) / 1000).toFixed(1)}s`;
+  }, 100);
+  const schedule = (delay, callback) => state.journeyTimers.push(setTimeout(callback, delay));
+  schedule(360, () => { setStage("intake", "done"); setStage("understanding", "active"); setStage("safety", "active"); });
+  schedule(900, () => { setStage("understanding", "done"); setStage("safety", "done"); setStage("context", "active"); });
+  schedule(1500, () => { setStage("context", "done"); setStage("response", "active"); });
+}
+
+function finishJourney(success = true) {
+  state.journeyTimers.forEach(clearTimeout);
+  state.journeyTimers = [];
+  clearInterval(state.timerInterval);
+  state.timerInterval = null;
+  if (success) STAGES.forEach((stage) => setStage(stage, "done"));
+  else document.querySelectorAll(".agent-node.active").forEach((node) => node.classList.add("error"));
+}
+
 async function sendMessage(event) {
   event.preventDefault();
   if (state.sending) return;
   const message = els.messageInput.value.trim();
-  if (!message) return;
+  if (!message) { els.messageInput.focus(); return; }
+
   state.sending = true;
   els.sendButton.disabled = true;
-  setPill(els.sessionBadge, "THINKING", "warn");
+  setSessionState("Agent 协作中", "working");
+  startJourney();
   els.messageInput.value = "";
+  updateCharCount();
   addMessage("user", message);
   const assistant = addMessage("assistant", "");
   let raw = "";
-  if (!state.requestId || state.pendingMessage !== message) {
-    state.requestId = crypto.randomUUID().replaceAll("-", "");
-  }
+  if (!state.requestId || state.pendingMessage !== message) state.requestId = crypto.randomUUID().replaceAll("-", "");
   state.pendingMessage = message;
 
   try {
@@ -170,6 +211,10 @@ async function sendMessage(event) {
         if (eventData.type === "meta") {
           state.sessionId = eventData.sessionId;
           state.requestId = eventData.requestId || state.requestId;
+          els.sessionIdText.textContent = state.sessionId ? state.sessionId.slice(0, 12) : "尚未创建";
+          STAGES.slice(0, 4).forEach((stage) => setStage(stage, "done"));
+          setStage("response", "active");
+          setSessionState("正在生成", "working");
         }
         if (eventData.type === "token") {
           raw += eventData.content || "";
@@ -178,50 +223,67 @@ async function sendMessage(event) {
         }
         if (eventData.type === "error") {
           streamFailed = true;
-          if (!raw) assistant.textContent = eventData.message || "MCP 工具调用失败";
-          setPill(els.sessionBadge, "ERROR", "danger");
+          if (!raw) assistant.textContent = eventData.message || "生成中断，请稍后重试";
+          setSessionState("请求失败", "error");
+          finishJourney(false);
         }
       });
     }
     if (!streamFailed) {
-      setPill(els.sessionBadge, "DONE", "ok");
+      setSessionState("回应完成", "done");
+      finishJourney(true);
       state.requestId = null;
       state.pendingMessage = null;
     }
   } catch (error) {
     assistant.textContent = `发送失败：${error.message}`;
     els.messageInput.value = message;
-    setPill(els.sessionBadge, "ERROR", "danger");
+    updateCharCount();
+    setSessionState("请求失败", "error");
+    finishJourney(false);
   } finally {
     state.sending = false;
     els.sendButton.disabled = false;
+    els.messageInput.focus();
   }
+}
+
+function updateCharCount() {
+  els.charCount.textContent = `${els.messageInput.value.length} / 4000`;
 }
 
 function resetSession() {
   state.sessionId = null;
   state.requestId = null;
   state.pendingMessage = null;
-  els.messages.innerHTML = `<div class="empty"><strong>新会话已开始</strong><p>你可以继续输入新的问题。</p></div>`;
-  setPill(els.sessionBadge, "READY");
+  els.sessionIdText.textContent = "尚未创建";
+  els.messages.innerHTML = '<div class="welcome-message"><span class="welcome-spark">✦</span><h2>新的对话已经准备好</h2><p>换一个话题也没关系，我们可以从头慢慢说。</p><div class="welcome-tags"><span>倾听</span><span>梳理</span><span>行动建议</span></div></div>';
+  setSessionState("准备就绪", "ready");
+  resetJourney();
+  els.messageInput.focus();
 }
 
-function logout() {
-  clearAuth();
-  window.location.assign("/");
-}
+function logout() { clearAuth(); window.location.assign("/"); }
 
 document.querySelectorAll("[data-quick]").forEach((button) => {
   button.addEventListener("click", () => {
+    document.querySelectorAll("[data-quick]").forEach((item) => item.classList.remove("selected"));
+    button.classList.add("selected");
     els.messageInput.value = button.dataset.quick;
+    updateCharCount();
     els.messageInput.focus();
   });
+});
+els.messageInput.addEventListener("input", updateCharCount);
+els.messageInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    els.chatForm.requestSubmit();
+  }
 });
 els.chatForm.addEventListener("submit", sendMessage);
 els.newSession.addEventListener("click", resetSession);
 els.switchAccount.addEventListener("click", logout);
 
 checkHealth();
-loadProfile().then((profile) => {
-  if (profile) loadAgentStatus();
-});
+loadProfile().then((profile) => { if (profile) loadAgentStatus(); });

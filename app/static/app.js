@@ -6,7 +6,8 @@ const els = {
   loginForm: document.querySelector("#loginForm"),
   username: document.querySelector("#username"),
   password: document.querySelector("#password"),
-  loginState: document.querySelector("#loginState")
+  loginState: document.querySelector("#loginState"),
+  demoRoles: document.querySelectorAll("[data-demo-role]")
 };
 
 function authHeader(token) {
@@ -17,10 +18,10 @@ function isAdmin(profile) {
   return profile.roles?.some((role) => role.authority === "ROLE_ADMIN");
 }
 
-function setPill(el, text, tone = "ok") {
-  if (!el) return;
-  el.textContent = text;
-  el.className = `pill ${tone}`;
+function setServiceState(text, tone = "ok") {
+  if (!els.serviceState) return;
+  els.serviceState.innerHTML = `<i></i>${text}`;
+  els.serviceState.className = `status-dot ${tone}`;
 }
 
 async function api(path, token, options = {}) {
@@ -54,22 +55,27 @@ function routeProfile(profile) {
   window.location.assign(isAdmin(profile) ? "/admin.html" : "/student.html");
 }
 
+function selectDemoRole(role) {
+  const isStudent = role === "student";
+  els.username.value = isStudent ? "student" : "admin";
+  els.password.value = isStudent ? "student123" : "admin123";
+  els.demoRoles.forEach((button) => button.classList.toggle("active", button.dataset.demoRole === role));
+  els.loginState.textContent = `${isStudent ? "学生" : "管理员"}演示账号已填好，点击进入体验`;
+}
+
 async function checkHealth() {
   try {
     const response = await fetch("/actuator/health");
     const body = await response.json();
-    setPill(els.serviceState, body.status === "UP" ? "服务正常" : `服务 ${body.status}`, body.status === "UP" ? "ok" : "danger");
+    setServiceState(body.status === "UP" ? "服务在线" : `服务 ${body.status}`, body.status === "UP" ? "ok" : "danger");
   } catch {
-    setPill(els.serviceState, "服务 DOWN", "danger");
+    setServiceState("服务未启动", "danger");
   }
 }
 
 async function resumeExistingLogin() {
   const auth = readAuth();
-  if (!auth?.token) {
-    setPill(els.modelState, "登录后读取", "warn");
-    return;
-  }
+  if (!auth?.token) return;
   try {
     const response = await api("/api/profile", auth.token);
     const profile = await response.json();
@@ -77,7 +83,6 @@ async function resumeExistingLogin() {
     routeProfile(profile);
   } catch {
     sessionStorage.removeItem(AUTH_KEY);
-    setPill(els.modelState, "登录后读取", "warn");
   }
 }
 
@@ -86,19 +91,23 @@ async function login(event) {
   const username = els.username.value.trim();
   const password = els.password.value;
   const token = btoa(`${username}:${password}`);
-  els.loginState.textContent = "正在登录...";
+  const submit = els.loginForm.querySelector("button[type=submit]");
+  submit.disabled = true;
+  els.loginState.textContent = "正在建立安全会话……";
   try {
     const response = await api("/api/profile", token);
     const profile = await response.json();
     saveAuth(token, profile);
-    els.loginState.textContent = "登录成功，正在进入工作台";
+    els.loginState.textContent = "验证成功，正在进入工作台";
     routeProfile(profile);
   } catch (error) {
     sessionStorage.removeItem(AUTH_KEY);
     els.loginState.textContent = `登录失败：${error.message}`;
+    submit.disabled = false;
   }
 }
 
+els.demoRoles.forEach((button) => button.addEventListener("click", () => selectDemoRole(button.dataset.demoRole)));
 els.loginForm.addEventListener("submit", login);
 checkHealth();
 resumeExistingLogin();

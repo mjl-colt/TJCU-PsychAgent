@@ -3,56 +3,89 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>心理ai 登录</title>
-  <link rel="stylesheet" href="/styles.css?v=role-split-20260617">
+  <meta name="description" content="心理ai——面向校园场景的多 Agent 心理陪伴系统">
+  <title>心理ai · 校园心理陪伴系统</title>
+  <link rel="stylesheet" href="/styles.css?v=showcase-20260908">
 </head>
 <body class="portal-page">
-  <header class="topbar portal-topbar">
-    <div class="brand">
-      <div class="logo">MB</div>
-      <div>
-        <p class="eyebrow">MIND BRIDGE AGENT</p>
-        <h1>心理ai 校园心理助手</h1>
-      </div>
-    </div>
-    <div class="status-row">
-      <span id="serviceState" class="pill warn">连接中</span>
-      <span id="modelState" class="pill warn">模型读取中</span>
+  <div class="ambient ambient-one" aria-hidden="true"></div>
+  <div class="ambient ambient-two" aria-hidden="true"></div>
+
+  <header class="portal-nav">
+    <a class="brand" href="/" aria-label="心理ai 首页">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32"><path d="M9.5 7.5a6 6 0 0 0-2 11.66V24l4.5-2.5h7.5a6 6 0 0 0 0-12h-10Z"/><path d="M13 14.8c1.7-2 4.3-2 6 0"/></svg>
+      </span>
+      <span><strong>心理ai</strong><small>PsychAgent</small></span>
+    </a>
+    <div class="nav-status" aria-label="服务状态">
+      <span id="serviceState" class="status-dot wait"><i></i>连接服务</span>
+      <span id="modelState" class="status-dot muted"><i></i>登录后读取模型</span>
     </div>
   </header>
 
-  <main class="login-shell">
-    <section class="login-panel">
-      <p class="panel-label">ACCOUNT GATE</p>
-      <h2>选择账号进入对应工作台</h2>
-      <form id="loginForm" class="login-form">
-        <label>
-          <span>用户名</span>
-          <input id="username" value="student" autocomplete="username">
-        </label>
-        <label>
-          <span>密码</span>
-          <input id="password" value="student123" type="password" autocomplete="current-password">
-        </label>
-        <button class="primary full" type="submit">登录并进入</button>
-        <p id="loginState" class="hint">学生：student / student123，管理员：admin / admin123</p>
-      </form>
+  <main class="portal-shell">
+    <section class="hero-copy">
+      <p class="hero-kicker"><span></span> EVENT-DRIVEN MULTI-AGENT SYSTEM</p>
+      <h1>让每一次求助，<br><em>都被认真接住。</em></h1>
+      <p class="hero-lead">面向校园场景的智能心理陪伴系统。四个 Agent 在共享黑板上协作，让理解、检索、安全与回应都有迹可循。</p>
+
+      <div class="capability-row" aria-label="系统核心能力">
+        <span><b>04</b> 协作 Agent</span>
+        <span><b>RAG</b> 混合检索</span>
+        <span><b>24/7</b> 安全守护</span>
+      </div>
+
+      <figure class="hero-visual">
+        <img src="/assets/mindbridge-campus-companion.png" alt="学生在温暖的校园空间记录心情">
+        <figcaption class="visual-overlay">
+          <span class="live-orb"></span>
+          <div><small>AGENT RUNTIME</small><strong>理解与安全评估并行执行</strong></div>
+          <span class="runtime-ms">async</span>
+        </figcaption>
+      </figure>
     </section>
 
-    <section class="entry-grid" aria-label="角色入口说明">
-      <article class="entry-card student-entry">
-        <span class="entry-kicker">STUDENT</span>
-        <h3>学生端</h3>
-        <p>只提供心理陪伴对话、快捷表达和会话状态。</p>
-      </article>
-      <article class="entry-card admin-entry">
-        <span class="entry-kicker">COUNSELOR ADMIN</span>
-        <h3>管理员端</h3>
-        <p>只提供风险报告、个案闭环、知识库维护和系统数据。</p>
-      </article>
+    <section class="login-card" aria-labelledby="loginTitle">
+      <div class="login-card-head">
+        <span class="section-index">01 / ACCESS</span>
+        <span class="privacy-chip">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.7 2.9 8.1 7 10 4.1-1.9 7-5.3 7-10V6l-7-3Z"/><path d="m9.5 12 1.6 1.6 3.6-4"/></svg>
+          隐私保护
+        </span>
+      </div>
+      <h2 id="loginTitle">欢迎回来</h2>
+      <p class="login-intro">选择一个身份，进入对应的体验工作台。</p>
+
+      <div class="demo-switch" aria-label="快速演示入口">
+        <button type="button" class="demo-role active" data-demo-role="student">
+          <span class="role-icon">学</span>
+          <span><strong>学生演示</strong><small>陪伴对话与 Agent 流程</small></span>
+        </button>
+        <button type="button" class="demo-role" data-demo-role="admin">
+          <span class="role-icon admin">管</span>
+          <span><strong>管理端演示</strong><small>风险闭环与知识库</small></span>
+        </button>
+      </div>
+
+      <form id="loginForm" class="login-form">
+        <label><span>账号</span><input id="username" value="student" autocomplete="username" aria-label="账号"></label>
+        <label><span>密码</span><input id="password" value="student123" type="password" autocomplete="current-password" aria-label="密码"></label>
+        <button class="primary full login-submit" type="submit">
+          <span>进入体验</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </button>
+        <p id="loginState" class="login-state" aria-live="polite">演示账号已为你填好，直接进入即可</p>
+      </form>
+
+      <div class="login-foot"><span>Blackboard Runtime</span><span>Hybrid RAG</span><span>Safety Guardrail</span></div>
     </section>
   </main>
 
-  <script src="/app.js?v=role-split-20260617"></script>
+  <footer class="portal-footer">
+    <span>© 2026 PsychAgent</span>
+    <span>为校园心理支持场景而设计 · 非医疗诊断工具</span>
+  </footer>
+  <script src="/app.js?v=showcase-20260908"></script>
 </body>
 </html>

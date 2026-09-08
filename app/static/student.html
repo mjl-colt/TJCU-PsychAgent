@@ -3,75 +3,74 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>心理ai 学生端</title>
-  <link rel="stylesheet" href="/styles.css?v=role-split-20260617">
+  <meta name="description" content="心理ai 学生心理陪伴工作台">
+  <title>心理ai · 学生陪伴工作台</title>
+  <link rel="stylesheet" href="/styles.css?v=showcase-20260908">
 </head>
-<body class="student-page">
-  <header class="topbar">
-    <div class="brand">
-      <div class="logo student-logo">MB</div>
-      <div>
-        <p class="eyebrow">STUDENT COMPANION</p>
-        <h1>心理ai 学生心理陪伴</h1>
-      </div>
-    </div>
-    <div class="status-row">
-      <span id="serviceState" class="pill warn">连接中</span>
-      <span id="modelState" class="pill warn">模型读取中</span>
-      <div id="accountBadge" class="account">
-        <strong id="activeAccount">学生</strong>
-        <span>学生端</span>
-      </div>
-      <button id="switchAccount" class="dark-btn" type="button">退出</button>
+<body class="student-page showcase-student">
+  <header class="workspace-nav">
+    <a class="brand" href="/" aria-label="返回心理ai首页">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32"><path d="M9.5 7.5a6 6 0 0 0-2 11.66V24l4.5-2.5h7.5a6 6 0 0 0 0-12h-10Z"/><path d="M13 14.8c1.7-2 4.3-2 6 0"/></svg>
+      </span>
+      <span><strong>心理ai</strong><small>Student Companion</small></span>
+    </a>
+    <div class="workspace-status">
+      <span id="serviceState" class="status-dot wait"><i></i>连接中</span>
+      <span id="modelState" class="model-chip">读取模型中</span>
+      <div class="profile-chip"><span class="avatar">同</span><span><strong id="activeAccount">同学</strong><small>隐私会话</small></span></div>
+      <button id="switchAccount" class="icon-button" type="button" title="退出登录" aria-label="退出登录">
+        <svg viewBox="0 0 24 24"><path d="M9 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4M16 17l5-5-5-5M21 12H9"/></svg>
+      </button>
     </div>
   </header>
 
-  <main class="student-layout">
-    <aside class="student-rail">
-      <section class="panel">
-        <p class="panel-label">QUICK SIGNAL</p>
-        <button class="signal" type="button" data-quick="我最近压力很大，晚上总是睡不着。">压力失眠</button>
-        <button class="signal" type="button" data-quick="我感觉很焦虑，考试前完全静不下来。">焦虑倾诉</button>
-        <button class="signal" type="button" data-quick="我最近情绪很低落，不太想和别人说话。">低落求助</button>
-        <button class="signal" type="button" data-quick="我想聊聊最近和家人的矛盾。">关系困扰</button>
-      </section>
-
-      <section class="panel">
-        <p class="panel-label">CARE LOOP</p>
-        <ol class="loop-list">
-          <li>理解当前表达</li>
-          <li>识别压力与风险</li>
-          <li>检索校内支持知识</li>
-          <li>生成陪伴式回应</li>
-          <li>必要时建议线下求助</li>
-        </ol>
+  <main class="showcase-layout">
+    <aside class="scenario-rail">
+      <div class="rail-heading"><span class="section-index">START HERE</span><h2>今天想聊什么？</h2><p>选择一个常见场景，或直接写下此刻最真实的感受。</p></div>
+      <div class="scenario-list">
+        <button class="scenario-card mint" type="button" data-quick="最近课程和事情堆在一起，我总觉得很焦虑，晚上也睡不好。"><span class="scenario-icon">压</span><span><strong>压力与睡眠</strong><small>课程、考试、失眠</small></span><i>→</i></button>
+        <button class="scenario-card blue" type="button" data-quick="考试越来越近，我总担心自己会失败，完全静不下来。"><span class="scenario-icon">考</span><span><strong>考试焦虑</strong><small>紧张、担忧、自我怀疑</small></span><i>→</i></button>
+        <button class="scenario-card coral" type="button" data-quick="我最近情绪很低落，不太想和别人说话，也不知道能找谁。"><span class="scenario-icon">情</span><span><strong>情绪低落</strong><small>孤独、无力、需要支持</small></span><i>→</i></button>
+        <button class="scenario-card amber" type="button" data-quick="我想聊聊最近和室友的矛盾，不知道该怎么开口。"><span class="scenario-icon">伴</span><span><strong>关系困扰</strong><small>室友、家人、人际边界</small></span><i>→</i></button>
+      </div>
+      <section class="privacy-note">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.7 2.9 8.1 7 10 4.1-1.9 7-5.3 7-10V6l-7-3Z"/><path d="M9 12h6M12 9v6"/></svg>
+        <div><strong>安全边界</strong><p>系统提供支持与资源建议，不替代专业诊断或紧急救助。</p></div>
       </section>
     </aside>
 
-    <section class="chat-panel student-chat">
-      <div class="chat-head">
-        <div>
-          <p class="panel-label">STUDENT CHAT</p>
-          <h2>心理陪伴对话</h2>
-        </div>
-        <span id="sessionBadge" class="pill">READY</span>
+    <section class="conversation-stage">
+      <div class="conversation-head">
+        <div class="conversation-title-row"><span class="companion-avatar">心</span><div><h1>陪伴对话</h1><p>我会认真听你说，也会尽量给出可执行的小步骤。</p></div></div>
+        <div class="session-state"><span id="sessionBadge" class="session-badge ready"><i></i>准备就绪</span><button id="newSession" class="text-button" type="button">＋ 新会话</button></div>
       </div>
-      <div id="messages" class="messages">
-        <div class="empty">
-          <strong>从一段真实表达开始</strong>
-          <p>你可以说压力、睡眠、关系、考试，也可以只写下现在最卡住的一句话。</p>
-        </div>
+      <div id="messages" class="messages showcase-messages" aria-live="polite">
+        <div class="welcome-message"><span class="welcome-spark">✦</span><h2>嗨，欢迎来到这里</h2><p>不需要组织得很完整。你可以从“最近有点……”开始，我会陪你一起梳理。</p><div class="welcome-tags"><span>倾听</span><span>梳理</span><span>行动建议</span></div></div>
       </div>
-      <form id="chatForm" class="composer">
-        <textarea id="messageInput" placeholder="写下你现在想说的话..." rows="3"></textarea>
-        <div class="composer-actions">
-          <button id="newSession" class="ghost" type="button">新会话</button>
-          <button id="sendButton" class="primary" type="submit">发送</button>
+      <form id="chatForm" class="showcase-composer">
+        <textarea id="messageInput" placeholder="写下你现在想说的话……" rows="3" maxlength="4000"></textarea>
+        <div class="composer-meta">
+          <span><kbd>Ctrl</kbd> + <kbd>Enter</kbd> 发送</span>
+          <div class="composer-actions"><span id="charCount">0 / 4000</span><button id="sendButton" class="send-button" type="submit"><span>发送</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 17 8-17 8 3-8-3-8Z"/><path d="M7 12h14"/></svg></button></div>
         </div>
       </form>
     </section>
-  </main>
 
-  <script src="/student.js?v=role-split-20260617"></script>
+    <aside class="runtime-rail">
+      <div class="runtime-head"><div><span class="section-index">LIVE RUNTIME</span><h2>Agent 协作视图</h2></div><span id="runtimeTimer" class="runtime-timer">0.0s</span></div>
+      <p class="runtime-description">一次请求如何经过理解、安全、检索与回应。</p>
+      <div id="agentJourney" class="agent-journey">
+        <article class="agent-node" data-stage="intake"><span class="node-marker">01</span><div><strong>Coordinator</strong><small>接收事件 · 分发命令</small></div><span class="node-state">等待</span></article>
+        <article class="agent-node parallel" data-stage="understanding"><span class="node-marker">02</span><div><strong>Understanding</strong><small>识别意图 · 输入脱敏</small></div><span class="node-state">等待</span></article>
+        <article class="agent-node parallel" data-stage="safety"><span class="node-marker">03</span><div><strong>Safety Guard</strong><small>风险策略 · 安全门禁</small></div><span class="node-state">等待</span></article>
+        <article class="agent-node" data-stage="context"><span class="node-marker">04</span><div><strong>Context</strong><small>记忆 · RAG · Skill</small></div><span class="node-state">等待</span></article>
+        <article class="agent-node" data-stage="response"><span class="node-marker">05</span><div><strong>Response</strong><small>证据约束 · 流式生成</small></div><span class="node-state">等待</span></article>
+      </div>
+      <section class="runtime-stack"><div class="stack-head"><span>技术栈快照</span><i></i></div><div class="stack-grid"><span>Blackboard</span><span>Event Bus</span><span>Hybrid RAG</span><span>Guardrail</span></div></section>
+      <div class="session-meta"><span>SESSION</span><code id="sessionIdText">尚未创建</code></div>
+    </aside>
+  </main>
+  <script src="/student.js?v=showcase-20260908"></script>
 </body>
 </html>

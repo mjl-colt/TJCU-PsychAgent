@@ -20,6 +20,15 @@
 - Runtime 基础能力：不可关闭的状态迁移门禁、可恢复上下文压缩、事件状态投影与 hash 校验。
 - Runtime JSON 持久化在 MySQL 使用 `LONGTEXT`，启动时自动兼容升级旧 `TEXT` 列，避免完整状态投影触碰 64KB 上限。
 
+## 前端演示
+
+服务启动后访问 `http://127.0.0.1:8080`。首页提供两个可直接选择的演示身份：
+
+- 学生演示：`student / student123`，体验场景快捷输入、SSE 流式对话和 Agent 协作过程。
+- 管理端演示：`admin / admin123`，查看风险个案、报告、会话档案与 RAG 知识库维护。
+
+学生端右侧的协作视图展示 Coordinator、Understanding、Safety、Context 和 Response 的请求路径，但不会向学生暴露后台风险标签、内部 Prompt 或敏感 trace。使用默认 `AI_PROVIDER=mock` 即可完整演示交互，无需配置云端 API Key。
+
 ## 学习文档
 
 - [Runtime 整体流程例子梳理](docs/心理ai%20Runtime整体流程例子梳理.md)：逐步说明 checkpoint 何时保存、存在哪里、崩溃后怎样恢复。
