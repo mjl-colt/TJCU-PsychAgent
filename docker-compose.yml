@@ -1,0 +1,102 @@
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: mindbridge
+      MYSQL_USER: mindbridge
+      MYSQL_PASSWORD: mindbridge
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    ports:
+      - "13306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -proot --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7.2-alpine
+    ports:
+      - "16379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  app:
+    build: .
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      AGENT_RUNTIME_MAX_EVENTS: ${AGENT_RUNTIME_MAX_EVENTS:-64}
+      AGENT_RUNTIME_IDLE_TIMEOUT_SECONDS: ${AGENT_RUNTIME_IDLE_TIMEOUT_SECONDS:-30}
+      AGENT_RUNTIME_MAX_CONCURRENCY: ${AGENT_RUNTIME_MAX_CONCURRENCY:-4}
+      AGENT_RUNTIME_TIMEOUT_SECONDS: ${AGENT_RUNTIME_TIMEOUT_SECONDS:-12}
+      AGENT_RUNTIME_SAFETY_TIMEOUT_SECONDS: ${AGENT_RUNTIME_SAFETY_TIMEOUT_SECONDS:-6}
+      AGENT_RUNTIME_MAX_RETRIES: ${AGENT_RUNTIME_MAX_RETRIES:-1}
+      AGENT_RUNTIME_RETRY_BACKOFF_SECONDS: ${AGENT_RUNTIME_RETRY_BACKOFF_SECONDS:-0.15}
+      AGENT_RUNTIME_MAX_PROMPT_REVISIONS: ${AGENT_RUNTIME_MAX_PROMPT_REVISIONS:-2}
+      AGENT_RUNTIME_PERSISTENCE_ENABLED: ${AGENT_RUNTIME_PERSISTENCE_ENABLED:-true}
+      AGENT_RUNTIME_PERSISTENCE_REQUIRED: ${AGENT_RUNTIME_PERSISTENCE_REQUIRED:-true}
+      AGENT_RUNTIME_RECOVERY_ENABLED: ${AGENT_RUNTIME_RECOVERY_ENABLED:-true}
+      AGENT_RUNTIME_RECOVERY_SCAN_LIMIT: ${AGENT_RUNTIME_RECOVERY_SCAN_LIMIT:-100}
+      AGENT_RUNTIME_LEASE_ENABLED: ${AGENT_RUNTIME_LEASE_ENABLED:-true}
+      AGENT_RUNTIME_LEASE_TTL_SECONDS: ${AGENT_RUNTIME_LEASE_TTL_SECONDS:-120}
+      AGENT_MAX_INPUT_CHARS: ${AGENT_MAX_INPUT_CHARS:-4000}
+      AGENT_MAX_PROMPT_CHARS: ${AGENT_MAX_PROMPT_CHARS:-12000}
+      AGENT_SUPPORT_OUTPUT_GUARDRAIL_ENABLED: ${AGENT_SUPPORT_OUTPUT_GUARDRAIL_ENABLED:-true}
+      AGENT_MODEL_FALLBACK_PROVIDER: ${AGENT_MODEL_FALLBACK_PROVIDER:-}
+      AGENT_MODEL_FALLBACK_MODEL: ${AGENT_MODEL_FALLBACK_MODEL:-}
+      AGENT_MODEL_CIRCUIT_BREAKER_FAILURES: ${AGENT_MODEL_CIRCUIT_BREAKER_FAILURES:-3}
+      AGENT_MODEL_CIRCUIT_BREAKER_RESET_SECONDS: ${AGENT_MODEL_CIRCUIT_BREAKER_RESET_SECONDS:-30}
+      AUTH_RATE_LIMIT_PER_MINUTE: ${AUTH_RATE_LIMIT_PER_MINUTE:-60}
+      CHAT_RATE_LIMIT_PER_MINUTE: ${CHAT_RATE_LIMIT_PER_MINUTE:-30}
+      AI_PROVIDER: ${AI_PROVIDER:-ollama}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-mindbridge-qwen2.5-7b-ft:latest}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-qwen3-embedding:0.6b}
+      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_TIMEOUT_SECONDS: ${EMBEDDING_TIMEOUT_SECONDS:-60}
+      EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-16}
+      DATABASE_URL: mysql+pymysql://mindbridge:mindbridge@mysql:3306/mindbridge?charset=utf8mb4
+      REDIS_URL: redis://redis:6379/0
+      KNOWLEDGE_VECTOR_ENABLED: ${KNOWLEDGE_VECTOR_ENABLED:-true}
+      KNOWLEDGE_VECTOR_REQUIRED: ${KNOWLEDGE_VECTOR_REQUIRED:-false}
+      KNOWLEDGE_MIN_RELEVANCE_SCORE: ${KNOWLEDGE_MIN_RELEVANCE_SCORE:-0.0}
+      KNOWLEDGE_MAX_INGEST_CHARS: ${KNOWLEDGE_MAX_INGEST_CHARS:-500000}
+      KNOWLEDGE_MAX_FILE_BYTES: ${KNOWLEDGE_MAX_FILE_BYTES:-5242880}
+      CHROMA_PERSIST_DIR: /app/data/chroma
+      CHROMA_SNAPSHOT_DIR: /app/data/chroma-snapshots
+      CHROMA_COLLECTION_NAME: ${CHROMA_COLLECTION_NAME:-mindbridge_knowledge}
+      TOOL_QUEUE_ENABLED: ${TOOL_QUEUE_ENABLED:-true}
+      TOOL_QUEUE_EXCEL_WORKERS: ${TOOL_QUEUE_EXCEL_WORKERS:-1}
+      TOOL_QUEUE_EMAIL_WORKERS: ${TOOL_QUEUE_EMAIL_WORKERS:-2}
+      ALERT_EMAIL_DELIVERY_MODE: ${ALERT_EMAIL_DELIVERY_MODE:-log}
+      ALERT_EMAIL_RATE_LIMIT_PER_MINUTE: ${ALERT_EMAIL_RATE_LIMIT_PER_MINUTE:-30}
+      EXCEL_PATH: /app/data/mindbridge-risk-ledger.xlsx
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/actuator/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  mysql-data:
+  redis-data:

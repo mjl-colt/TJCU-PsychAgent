@@ -1,0 +1,44 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Runtime data and generated output
+.uploads/
+data/chroma/
+data/chroma-snapshots/
+*.db
+*.sqlite
+*.sqlite3
+*.xlsx
+target/
+*.log
+
+# Local model weights and archives (keep models/**/Modelfile)
+models/**/*.gguf
+models/**/*.safetensors
+models/**/*.bin
+models/**/*.pt
+models/**/*.pth
+models/**/*.zip
+models/**/*.tar.gz
