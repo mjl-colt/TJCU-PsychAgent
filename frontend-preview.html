@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>心理ai · 纯前端预览</title>
+  <link rel="stylesheet" href="./app/static/styles.css">
+  <style>
+    body.preview-page { margin: 0; overflow-x: hidden; background: #e9efeb; }
+    .preview-toolbar {
+      position: sticky; top: 0; z-index: 1000; min-height: 58px; padding: 8px 18px;
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      border-bottom: 1px solid rgba(29,73,68,.14); background: rgba(247,249,246,.94);
+      box-shadow: 0 8px 28px rgba(28,63,59,.08); backdrop-filter: blur(18px);
+    }
+    .preview-label { display: flex; align-items: center; gap: 10px; color: #536d69; font-size: 12px; font-weight: 800; }
+    .preview-label i { width: 9px; height: 9px; border-radius: 50%; background: #43b58d; box-shadow: 0 0 0 5px rgba(67,181,141,.12); }
+    .preview-label small { color: #8b9a97; font-weight: 600; }
+    .preview-tabs { display: flex; gap: 5px; padding: 4px; border-radius: 12px; background: #e5ece8; }
+    .preview-tab { min-height: 34px; padding: 0 14px; border: 0; border-radius: 9px; background: transparent; color: #71827f; font-size: 11px; font-weight: 800; }
+    .preview-tab.active { background: white; color: #237d71; box-shadow: 0 4px 12px rgba(35,73,68,.09); }
+    .preview-view { display: none; min-height: calc(100vh - 58px); }
+    .preview-view.active { display: block; }
+    .preview-view.portal-page { padding-top: 1px; }
+    .preview-view .portal-shell { min-height: calc(100vh - 215px); }
+    .preview-view .showcase-layout { height: calc(100vh - 134px); }
+    .preview-view .scenario-card.selected { border-color: rgba(35,125,113,.35); background: #edf7f3; }
+    .preview-banner { padding: 8px 14px; border-radius: 10px; background: #edf7f3; color: #237d71; font-size: 10px; font-weight: 800; }
+    .preview-admin { padding-bottom: 26px; background: linear-gradient(135deg,#f0f4f8,#f5f7f2); }
+    .preview-admin-main { width: min(1420px,calc(100% - 32px)); margin: 0 auto; display: grid; gap: 14px; }
+    .admin-hero { padding: 24px 26px; display: flex; align-items: center; justify-content: space-between; gap: 20px; border: 1px solid rgba(51,75,112,.12); border-radius: 22px; background: linear-gradient(120deg,#1d3557,#294d69); color: white; box-shadow: 0 18px 44px rgba(31,53,83,.16); }
+    .admin-hero small { color: #aac5d7; font-size: 10px; font-weight: 900; letter-spacing: .16em; }
+    .admin-hero h1 { margin-top: 8px; font-size: 27px; }
+    .admin-hero p { margin: 7px 0 0; color: #c8d9e3; font-size: 12px; }
+    .admin-live { display: flex; align-items: center; gap: 8px; font-size: 10px; font-weight: 800; }
+    .admin-live i { width: 8px; height: 8px; border-radius: 50%; background: #5de1af; box-shadow: 0 0 0 5px rgba(93,225,175,.13); }
+    .admin-metrics { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 12px; }
+    .admin-metric { padding: 17px 18px; border: 1px solid rgba(51,75,112,.11); border-radius: 17px; background: rgba(255,255,255,.93); }
+    .admin-metric span { color: #7d8c99; font-size: 10px; font-weight: 800; }
+    .admin-metric strong { display: block; margin-top: 7px; color: #203b55; font-size: 29px; }
+    .admin-metric em { margin-left: 5px; color: #42a880; font-size: 9px; font-style: normal; }
+    .admin-preview-grid { display: grid; grid-template-columns: minmax(0,.92fr) minmax(0,1.08fr); gap: 14px; }
+    .admin-preview-stack { display: grid; gap: 14px; align-content: start; }
+    .admin-preview-panel { padding: 20px; border: 1px solid rgba(51,75,112,.11); border-radius: 19px; background: rgba(255,255,255,.95); }
+    .preview-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 15px; }
+    .preview-panel-head small { color: #8b99a4; font-size: 9px; font-weight: 900; letter-spacing: .14em; }
+    .preview-panel-head h2 { margin-top: 6px; color: #203b55; font-size: 17px; }
+    .count-chip { padding: 6px 9px; border-radius: 8px; background: #edf1f7; color: #5e7391; font-size: 9px; font-weight: 800; }
+    .mock-case { padding: 13px 14px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 11px; border: 1px solid #e2e8ed; border-radius: 13px; }
+    .mock-case + .mock-case { margin-top: 8px; }
+    .case-level { width: 35px; height: 35px; display: grid; place-items: center; border-radius: 11px; background: #fff0eb; color: #bd604f; font-size: 9px; font-weight: 900; }
+    .case-level.medium { background: #fff6de; color: #a47622; }
+    .mock-case div { display: grid; gap: 3px; }
+    .mock-case strong { color: #344c61; font-size: 11px; }
+    .mock-case small { color: #8a98a3; font-size: 9px; }
+    .mock-case > span { color: #73859a; font-size: 9px; }
+    .knowledge-card { padding: 15px; border-radius: 14px; background: #edf5f2; }
+    .knowledge-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #58736d; font-size: 10px; }
+    .knowledge-row + .knowledge-row { margin-top: 11px; padding-top: 11px; border-top: 1px solid rgba(35,125,113,.12); }
+    .knowledge-row strong { color: #237d71; }
+    .mock-report { padding: 14px; border-left: 4px solid #7690bf; border-radius: 0 13px 13px 0; background: #f6f8fb; }
+    .mock-report + .mock-report { margin-top: 9px; }
+    .mock-report-head { display: flex; justify-content: space-between; gap: 12px; color: #526a83; font-size: 10px; font-weight: 800; }
+    .mock-report p { margin: 8px 0 5px; color: #506272; font-size: 10px; line-height: 1.6; }
+    .mock-report small { color: #929da6; font-size: 8px; }
+    .trace-list { display: grid; gap: 7px; }
+    .trace-step { display: grid; grid-template-columns: 25px 1fr auto; align-items: center; gap: 9px; padding: 9px 10px; border-radius: 10px; background: #f5f7f8; }
+    .trace-step b { width: 25px; height: 25px; display: grid; place-items: center; border-radius: 8px; background: #dfeae7; color: #39776d; font-size: 8px; }
+    .trace-step span { color: #536777; font-size: 9px; font-weight: 700; }
+    .trace-step small { color: #43a17f; font-size: 8px; }
+    @media (max-width: 950px) {
+      .preview-label small { display: none; }
+      .preview-view .showcase-layout { height: auto; }
+      .admin-metrics { grid-template-columns: repeat(3,1fr); }
+      .admin-preview-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 620px) {
+      .preview-toolbar { align-items: stretch; flex-direction: column; }
+      .preview-tabs { width: 100%; }
+      .preview-tab { flex: 1; padding: 0 6px; }
+      .admin-metrics { grid-template-columns: repeat(2,1fr); }
+      .admin-hero { align-items: flex-start; flex-direction: column; }
+    }
+  </style>
+</head>
+<body class="preview-page">
+  <nav class="preview-toolbar">
+    <div class="preview-label"><i></i><span>纯前端预览</span><small>无需启动服务 · 所有数据均为演示</small></div>
+    <div class="preview-tabs" aria-label="预览页面切换">
+      <button class="preview-tab active" data-view="landing">登录首页</button>
+      <button class="preview-tab" data-view="student">学生端</button>
+      <button class="preview-tab" data-view="admin">管理端</button>
+    </div>
+  </nav>
+
+  <section id="landingView" class="preview-view portal-page active">
+    <header class="portal-nav">
+      <a class="brand" href="#"><span class="brand-mark"><svg viewBox="0 0 32 32"><path d="M9.5 7.5a6 6 0 0 0-2 11.66V24l4.5-2.5h7.5a6 6 0 0 0 0-12h-10Z"/><path d="M13 14.8c1.7-2 4.3-2 6 0"/></svg></span><span><strong>心理ai</strong><small>PsychAgent</small></span></a>
+      <div class="nav-status"><span class="status-dot ok"><i></i>预览就绪</span><span class="status-dot muted"><i></i>Mock Demo</span></div>
+    </header>
+    <main class="portal-shell">
+      <section class="hero-copy">
+        <p class="hero-kicker"><span></span> EVENT-DRIVEN MULTI-AGENT SYSTEM</p>
+        <h1>让每一次求助，<br><em>都被认真接住。</em></h1>
+        <p class="hero-lead">面向校园场景的智能心理陪伴系统。四个 Agent 在共享黑板上协作，让理解、检索、安全与回应都有迹可循。</p>
+        <div class="capability-row"><span><b>04</b> 协作 Agent</span><span><b>RAG</b> 混合检索</span><span><b>24/7</b> 安全守护</span></div>
+        <figure class="hero-visual"><img src="./app/static/assets/mindbridge-campus-companion.png" alt="校园心理陪伴场景"><figcaption class="visual-overlay"><span class="live-orb"></span><div><small>AGENT RUNTIME</small><strong>理解与安全评估并行执行</strong></div><span class="runtime-ms">async</span></figcaption></figure>
+      </section>
+      <section class="login-card">
+        <div class="login-card-head"><span class="section-index">01 / ACCESS</span><span class="privacy-chip">安全演示</span></div>
+        <h2>欢迎回来</h2><p class="login-intro">选择一个身份，进入对应的体验工作台。</p>
+        <div class="demo-switch">
+          <button type="button" class="demo-role active" data-open="student"><span class="role-icon">学</span><span><strong>学生演示</strong><small>陪伴对话与 Agent 流程</small></span></button>
+          <button type="button" class="demo-role" data-open="admin"><span class="role-icon admin">管</span><span><strong>管理端演示</strong><small>风险闭环与知识库</small></span></button>
+        </div>
+        <div class="login-form">
+          <label><span>账号</span><input value="student" readonly></label><label><span>密码</span><input value="student123" type="password" readonly></label>
+          <button class="primary full login-submit" type="button" data-open="student"><span>进入学生端预览</span><span>→</span></button>
+          <p class="login-state">纯静态交互，不会提交账号或请求网络</p>
+        </div>
+        <div class="login-foot"><span>Blackboard Runtime</span><span>Hybrid RAG</span><span>Safety Guardrail</span></div>
+      </section>
+    </main>
+  </section>
+
+  <section id="studentView" class="preview-view student-page showcase-student">
+    <header class="workspace-nav">
+      <a class="brand" href="#" data-open="landing"><span class="brand-mark"><svg viewBox="0 0 32 32"><path d="M9.5 7.5a6 6 0 0 0-2 11.66V24l4.5-2.5h7.5a6 6 0 0 0 0-12h-10Z"/><path d="M13 14.8c1.7-2 4.3-2 6 0"/></svg></span><span><strong>心理ai</strong><small>Student Companion</small></span></a>
+      <div class="workspace-status"><span class="status-dot ok"><i></i>预览在线</span><span class="model-chip">Mock 演示模型</span><div class="profile-chip"><span class="avatar">同</span><span><strong>演示同学</strong><small>隐私会话</small></span></div></div>
+    </header>
+    <main class="showcase-layout">
+      <aside class="scenario-rail">
+        <div class="rail-heading"><span class="section-index">START HERE</span><h2>今天想聊什么？</h2><p>选择一个常见场景，或直接写下此刻最真实的感受。</p></div>
+        <div class="scenario-list">
+          <button class="scenario-card mint" data-demo-message="最近课程和事情堆在一起，我总觉得很焦虑，晚上也睡不好。"><span class="scenario-icon">压</span><span><strong>压力与睡眠</strong><small>课程、考试、失眠</small></span><i>→</i></button>
+          <button class="scenario-card blue" data-demo-message="考试越来越近，我总担心自己会失败，完全静不下来。"><span class="scenario-icon">考</span><span><strong>考试焦虑</strong><small>紧张、担忧、自我怀疑</small></span><i>→</i></button>
+          <button class="scenario-card coral" data-demo-message="我最近情绪很低落，不太想和别人说话，也不知道能找谁。"><span class="scenario-icon">情</span><span><strong>情绪低落</strong><small>孤独、无力、需要支持</small></span><i>→</i></button>
+          <button class="scenario-card amber" data-demo-message="我想聊聊最近和室友的矛盾，不知道该怎么开口。"><span class="scenario-icon">伴</span><span><strong>关系困扰</strong><small>室友、家人、人际边界</small></span><i>→</i></button>
+        </div>
+        <section class="privacy-note"><span>🛡️</span><div><strong>安全边界</strong><p>系统提供支持与资源建议，不替代专业诊断或紧急救助。</p></div></section>
+      </aside>
+      <section class="conversation-stage">
+        <div class="conversation-head"><div class="conversation-title-row"><span class="companion-avatar">心</span><div><h1>陪伴对话</h1><p>我会认真听你说，也会尽量给出可执行的小步骤。</p></div></div><div class="session-state"><span id="previewSessionBadge" class="session-badge ready"><i></i>准备就绪</span><button id="previewReset" class="text-button">＋ 新会话</button></div></div>
+        <div id="previewMessages" class="messages showcase-messages"><div class="welcome-message"><span class="welcome-spark">✦</span><h2>嗨，欢迎来到这里</h2><p>不需要组织得很完整。你可以从“最近有点……”开始，我会陪你一起梳理。</p><div class="welcome-tags"><span>倾听</span><span>梳理</span><span>行动建议</span></div></div></div>
+        <form id="previewChatForm" class="showcase-composer"><textarea id="previewInput" placeholder="写下你现在想说的话……" rows="3" maxlength="4000"></textarea><div class="composer-meta"><span>选择左侧场景可快速填入</span><div class="composer-actions"><span id="previewCount">0 / 4000</span><button id="previewSend" class="send-button" type="submit"><span>模拟发送</span><span>➤</span></button></div></div></form>
+      </section>
+      <aside class="runtime-rail">
+        <div class="runtime-head"><div><span class="section-index">LIVE RUNTIME</span><h2>Agent 协作视图</h2></div><span id="previewTimer" class="runtime-timer">0.0s</span></div>
+        <p class="runtime-description">一次请求如何经过理解、安全、检索与回应。</p>
+        <div id="previewJourney" class="agent-journey">
+          <article class="agent-node" data-preview-stage="0"><span class="node-marker">01</span><div><strong>Coordinator</strong><small>接收事件 · 分发命令</small></div><span class="node-state">等待</span></article>
+          <article class="agent-node" data-preview-stage="1"><span class="node-marker">02</span><div><strong>Understanding</strong><small>识别意图 · 输入脱敏</small></div><span class="node-state">等待</span></article>
+          <article class="agent-node" data-preview-stage="2"><span class="node-marker">03</span><div><strong>Safety Guard</strong><small>风险策略 · 安全门禁</small></div><span class="node-state">等待</span></article>
+          <article class="agent-node" data-preview-stage="3"><span class="node-marker">04</span><div><strong>Context</strong><small>记忆 · RAG · Skill</small></div><span class="node-state">等待</span></article>
+          <article class="agent-node" data-preview-stage="4"><span class="node-marker">05</span><div><strong>Response</strong><small>证据约束 · 流式生成</small></div><span class="node-state">等待</span></article>
+        </div>
+        <section class="runtime-stack"><div class="stack-head"><span>技术栈快照</span><i></i></div><div class="stack-grid"><span>Blackboard</span><span>Event Bus</span><span>Hybrid RAG</span><span>Guardrail</span></div></section>
+        <div class="session-meta"><span>MODE</span><code>STATIC_PREVIEW</code></div>
+      </aside>
+    </main>
+  </section>
+
+  <section id="adminView" class="preview-view preview-admin">
+    <header class="workspace-nav">
+      <a class="brand" href="#" data-open="landing"><span class="brand-mark"><svg viewBox="0 0 32 32"><path d="M9.5 7.5a6 6 0 0 0-2 11.66V24l4.5-2.5h7.5a6 6 0 0 0 0-12h-10Z"/></svg></span><span><strong>心理ai</strong><small>Counselor Admin</small></span></a>
+      <div class="workspace-status"><span class="preview-banner">演示数据 · 不连接数据库</span><div class="profile-chip"><span class="avatar">管</span><span><strong>咨询管理员</strong><small>只读预览</small></span></div></div>
+    </header>
+    <main class="preview-admin-main">
+      <section class="admin-hero"><div><small>COUNSELOR OPERATIONS CENTER</small><h1>校园心理支持工作台</h1><p>从风险识别到人工接力，让每一次需要被看见的求助都有闭环。</p></div><span class="admin-live"><i></i>系统状态正常</span></section>
+      <section class="admin-metrics">
+        <article class="admin-metric"><span>今日咨询</span><strong>28<em>+12%</em></strong></article><article class="admin-metric"><span>需要关注</span><strong>4</strong></article><article class="admin-metric"><span>处理中个案</span><strong>3</strong></article><article class="admin-metric"><span>知识块</span><strong>79</strong></article><article class="admin-metric"><span>Agent 成功率</span><strong>99.2%</strong></article>
+      </section>
+      <section class="admin-preview-grid">
+        <div class="admin-preview-stack">
+          <article class="admin-preview-panel"><div class="preview-panel-head"><div><small>CASES</small><h2>风险个案闭环</h2></div><span class="count-chip">3 个处理中</span></div><div class="mock-case"><span class="case-level">高</span><div><strong>需要立即人工关注</strong><small>考试压力 · 16:24 创建</small></div><span>待确认</span></div><div class="mock-case"><span class="case-level medium">中</span><div><strong>持续失眠与焦虑</strong><small>睡眠困扰 · 15:02 更新</small></div><span>跟进中</span></div></article>
+          <article class="admin-preview-panel"><div class="preview-panel-head"><div><small>KNOWLEDGE BASE</small><h2>RAG 知识库</h2></div><span class="count-chip">索引正常</span></div><div class="knowledge-card"><div class="knowledge-row"><span>种子文档</span><strong>18 份</strong></div><div class="knowledge-row"><span>语义知识块</span><strong>79 chunks</strong></div><div class="knowledge-row"><span>检索策略</span><strong>Vector + BM25</strong></div></div></article>
+        </div>
+        <div class="admin-preview-stack">
+          <article class="admin-preview-panel"><div class="preview-panel-head"><div><small>REPORTS</small><h2>最新咨询报告</h2></div><span class="count-chip">今日 28</span></div><div class="mock-report"><div class="mock-report-head"><span>Demo Student · 咨询</span><span>低风险</span></div><p>临近考试出现持续紧张与睡眠困扰，已提供落地练习和校内支持资源。</p><small>2026-09-08 16:20 · session_7f4a</small></div><div class="mock-report"><div class="mock-report-head"><span>Student 018 · 咨询</span><span>中风险</span></div><p>近期人际冲突带来明显情绪波动，建议继续跟进并建立支持联系人。</p><small>2026-09-08 15:48 · session_3c12</small></div></article>
+          <article class="admin-preview-panel"><div class="preview-panel-head"><div><small>AGENT TRACE</small><h2>最近一次协作链路</h2></div><span class="count-chip">1.8s</span></div><div class="trace-list"><div class="trace-step"><b>01</b><span>Understanding + Safety 并行</span><small>DONE</small></div><div class="trace-step"><b>02</b><span>Context · Hybrid RAG · Skill</span><small>DONE</small></div><div class="trace-step"><b>03</b><span>Response · Safety Review</span><small>DONE</small></div><div class="trace-step"><b>04</b><span>SSE 输出与业务落库</span><small>DONE</small></div></div></article>
+        </div>
+      </section>
+    </main>
+  </section>
+
+  <script>
+    const views = { landing: document.querySelector('#landingView'), student: document.querySelector('#studentView'), admin: document.querySelector('#adminView') };
+    const tabs = [...document.querySelectorAll('.preview-tab')];
+    function showView(name) {
+      Object.entries(views).forEach(([key, view]) => view.classList.toggle('active', key === name));
+      tabs.forEach(tab => tab.classList.toggle('active', tab.dataset.view === name));
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+    tabs.forEach(tab => tab.addEventListener('click', () => showView(tab.dataset.view)));
+    document.querySelectorAll('[data-open]').forEach(button => button.addEventListener('click', event => { event.preventDefault(); showView(button.dataset.open); }));
+
+    const input = document.querySelector('#previewInput');
+    const count = document.querySelector('#previewCount');
+    const messages = document.querySelector('#previewMessages');
+    const form = document.querySelector('#previewChatForm');
+    const send = document.querySelector('#previewSend');
+    const badge = document.querySelector('#previewSessionBadge');
+    const timer = document.querySelector('#previewTimer');
+    const nodes = [...document.querySelectorAll('[data-preview-stage]')];
+    const demoReply = '听起来，临近考试的压力已经影响到你的睡眠了。先不用急着把所有事情一次解决。\n\n今晚可以先试一个小步骤：把明天最重要的 3 件事写下来，然后做 2 分钟缓慢呼吸——吸气 4 秒，停 2 秒，呼气 6 秒。其余担心先允许自己留到明天处理。\n\n如果失眠和焦虑持续两周以上，或已经明显影响学习和生活，也可以联系学校心理中心获得更稳定的支持。[K1]';
+    let running = false;
+    function setNode(index, state) { const node = nodes[index]; node.classList.remove('active','done'); if (state !== 'waiting') node.classList.add(state); node.querySelector('.node-state').textContent = state === 'active' ? '运行中' : state === 'done' ? '完成' : '等待'; }
+    function resetJourney() { nodes.forEach((_,i) => setNode(i,'waiting')); timer.textContent = '0.0s'; }
+    function addMessage(role, text) { messages.querySelector('.welcome-message')?.remove(); const item = document.createElement('article'); item.className = `message ${role}`; item.innerHTML = `<div class="message-role"><span>${role === 'user' ? '我' : '心'}</span>${role === 'user' ? '我' : '心理ai'}</div><div class="bubble"></div>`; item.querySelector('.bubble').textContent = text; messages.append(item); messages.scrollTop = messages.scrollHeight; return item.querySelector('.bubble'); }
+    document.querySelectorAll('[data-demo-message]').forEach(card => card.addEventListener('click', () => { document.querySelectorAll('[data-demo-message]').forEach(item => item.classList.remove('selected')); card.classList.add('selected'); input.value = card.dataset.demoMessage; count.textContent = `${input.value.length} / 4000`; input.focus(); }));
+    input.addEventListener('input', () => count.textContent = `${input.value.length} / 4000`);
+    form.addEventListener('submit', event => {
+      event.preventDefault(); if (running || !input.value.trim()) return; running = true; send.disabled = true; resetJourney();
+      const text = input.value.trim(); input.value = ''; count.textContent = '0 / 4000'; addMessage('user', text); const reply = addMessage('assistant',''); reply.innerHTML = '<span class="typing"><i></i><i></i><i></i></span>';
+      badge.className = 'session-badge working'; badge.innerHTML = '<i></i>Agent 协作中'; const start = performance.now(); const ticker = setInterval(() => timer.textContent = `${((performance.now()-start)/1000).toFixed(1)}s`,100);
+      const stages = [[0,0],[1,300],[2,300],[3,760],[4,1150]]; stages.forEach(([index,delay]) => setTimeout(() => { if(index>0 && index!==2) setNode(index-1,'done'); if(index===3) setNode(2,'done'); setNode(index,'active'); },delay));
+      setTimeout(() => { nodes.forEach((_,i) => setNode(i,'done')); reply.textContent = demoReply; clearInterval(ticker); badge.className='session-badge done'; badge.innerHTML='<i></i>回应完成'; running=false; send.disabled=false; messages.scrollTop=messages.scrollHeight; },1850);
+    });
+    document.querySelector('#previewReset').addEventListener('click', () => { if(running) return; messages.innerHTML='<div class="welcome-message"><span class="welcome-spark">✦</span><h2>新的对话已经准备好</h2><p>选择左侧场景，就可以继续体验完整的前端交互。</p><div class="welcome-tags"><span>倾听</span><span>梳理</span><span>行动建议</span></div></div>'; badge.className='session-badge ready'; badge.innerHTML='<i></i>准备就绪'; resetJourney(); });
+  </script>
+</body>
+</html>
