@@ -1,5 +1,7 @@
 # 心理ai生产差距与十条优化路线
 
+更新于 2026-09-12：新请求使用 workflow-v2，event-v1 仅恢复历史 checkpoint。此次自动验证使用 SQLite + mock，未重新执行真实 MySQL 故障演练或模型质量评测。
+
 ## 先说结论
 
 当前版本已经不是“用四个类模拟 Agent”的 Demo，而是一个可恢复、可审计、有安全边界的单体 Agent Runtime。此次代码优化已经完成当前仓库内能可靠完成的部分；仍然缺少的内容主要依赖真实学校制度、生产基础设施和长期数据，不能靠多写几个类伪装完成。
@@ -20,7 +22,10 @@
 
 ### 已完成
 
-- `READY_FOR_GENERATION` 和 `GENERATING` 都不是终态；
+- `READY_FOR_GENERATION`、`GENERATING` 和 `FINALIZING_RESPONSE` 都不是终态；
+- 新流程以当前步骤、任务收据和显式转换规则推进，不再使用请求内 Event 队列；
+- 每个任务结果单独提交收据，收齐后只经过一道合并屏障；业务合并与下一步任务同事务保存；
+- 合法最终文本先进入 FINALIZING_RESPONSE checkpoint；业务收尾失败可直接复用文本；
 - 只有最终回答保存并写入 `GENERATION_COMPLETED + TURN_COMPLETED` 后，权威阶段才变成 `COMPLETED`；
 - 删除 Blackboard 中可由阶段推导的 `flow.completed`，checkpoint 表只保留从阶段生成的索引列，避免两个状态源互相矛盾；
 - 启动扫描把已批准但未生成的请求统计为 `awaiting_generation`；
@@ -33,7 +38,7 @@
 
 - Alembic 等正式 schema migration；
 - MySQL 主从/集群、备份和故障恢复演练；
-- 租约 fencing token，防止已经失去租约的旧 owner 在极端竞态下继续写。
+- 对外部模型/工具副作用的完整 fencing 或提供方幂等；当前已经在 checkpoint 写事务内校验有效 owner 并续租，但不能把数据库状态保护等同于所有外部动作恰好一次。
 
 ## 路线 2：把幂等从“事件不重复”扩展到完整业务
 
@@ -92,7 +97,7 @@ OWASP 推荐结构化隔离、外部内容清洗、输出验证、最小权限�
 | Response | 按预算组装 Prompt vN | 只生成系统内置安全 fallback Prompt |
 | Safety Review | 确定性审查同一 Prompt version | 只批准内置 safe_fallback，不放行普通 Prompt |
 
-Dispatcher 有分 Agent 超时、重试、指数退避、并发上限和 degraded 结果。Runtime 在原子合并前检查 Agent 写权限、Pydantic schema 和 state revision。
+Dispatcher 有分 Agent 超时、重试、指数退避、并发上限和 degraded 结果。Runtime 在原子合并前检查 Agent 写权限、Pydantic schema 和命令绑定的输入 revision。任务收据写入也会增加 checkpoint revision，不能误把这个新版本当作 Agent 输入版本。
 
 ### 还缺什么
 
@@ -127,11 +132,11 @@ Dispatcher 有分 Agent 超时、重试、指数退避、并发上限和 degrade
 ### 已完成
 
 - 会话短期记忆只保存真实对话；删除无独立消费者的四 Agent 私有字符串记忆，避免写放大和旧判断污染；
-- 私有 key 按 Agent + session 隔离；
+- 会话历史按 session 隔离，四 Agent 不再维护私有 key；
 - 内容写入前隐私脱敏，单条截断，数量有界；
 - Redis 启动不可用时使用跨 Runtime 对象的进程级共享 fallback；
 - Redis 运行时断开会自动切换 fallback，不再静默丢写；
-- Understanding/Response 可读自身策略摘要；Safety 不拿旧私有结论修改本轮风险，Context 每轮重新检索。
+- Understanding 只读本轮输入；Safety 使用受限真实会话历史，Context 整理摘要并重新检索，Response 消费当前 Blackboard，不读取旧私有结论。
 
 ### 还缺什么
 
@@ -231,8 +236,8 @@ PBKDF2 参数参考 OWASP 当前建议；正式系统也可选择 Argon2id：[OW
 - 事件日志记录 actor、事件类型、batch/command、耗时、重试、降级；
 - trace 保存 Prompt 模板版本、Skill 版本、Prompt hash、状态 revision、输入信任和注入 signals；
 - 指标包含 Agent 延迟、失败率、恢复、生成失败、租约、注入检测和输出替换；
-- 80 个单元测试；
-- Risk、Routing、Skills、RAG、API、Tool Queue 六套 Docker Harness；
+- 104 个单元测试通过，包括 v2 部分任务恢复、提交失败取消、失去 owner 拒写、审核失败关门和最终文本收尾恢复；
+- Risk、Routing、Skills、RAG、API、Tool Queue 六套工程 Harness 通过；此次为本机 SQLite + mock 回归，报告在 target/harness-workflow-v2-20260912/harness-report.json；
 - 对抗用例覆盖直接/编码/零宽/乱序注入、RAG poisoning、来源名注入、提示词泄露、伪造引用和工具策略；
 - RAG 评测加入负样本拒答率、检索决策准确率和固定参数记录；
 - 并行基准可重复运行。

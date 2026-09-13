@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     agent_runtime_max_events: int = 64
+    agent_workflow_max_steps: int = 32
     agent_runtime_idle_timeout_seconds: float = 30.0
     agent_runtime_max_concurrency: int = 4
     agent_runtime_timeout_seconds: float = 12.0

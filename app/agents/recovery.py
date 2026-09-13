@@ -4,7 +4,7 @@ import logging
 import uuid
 
 from app.agents.blackboard import FlowStage
-from app.agents.event_driven_runtime import EventDrivenAgentRuntimeService
+from app.agents.event_driven_runtime import AgentRuntimeService
 from app.agents.runtime_store import SqlAlchemyRuntimeStore
 from app.agents.runtime_lease import RuntimeLeaseManager
 from app.models.entities import ChatSession, UserAccount
@@ -50,7 +50,7 @@ async def recover_incomplete_runtime_runs(settings) -> dict[str, int]:
             # approved prompt but no final text.  Startup cannot push an SSE
             # response to a disconnected browser, so the same requestId must
             # resume it when the client reconnects.
-            if state.flow.current_stage == FlowStage.READY_FOR_GENERATION:
+            if state.flow.current_stage in {FlowStage.READY_FOR_GENERATION, FlowStage.FINALIZING_RESPONSE}:
                 awaiting_generation += 1
                 continue
             lease = lease_manager.acquire(
@@ -74,10 +74,11 @@ async def recover_incomplete_runtime_runs(settings) -> dict[str, int]:
                         state.request.request_id,
                     )
                     continue
-                result = await EventDrivenAgentRuntimeService(db, settings).resume_state_async(
+                result = await AgentRuntimeService(db, settings).resume_state_async(
                     user,
                     session,
                     state,
+                    lease=lease,
                 )
                 if result.runtime_state and result.runtime_state.flow.current_stage in {
                     FlowStage.READY_FOR_GENERATION,

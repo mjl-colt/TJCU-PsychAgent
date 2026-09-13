@@ -85,10 +85,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Harness suite to run. Can be supplied multiple times.",
     )
     parser.add_argument("--json", action="store_true", help="Print only JSON output.")
+    parser.add_argument("--output-dir", type=Path, help="Isolated report directory under project target/.")
     args = parser.parse_args(argv)
 
-    configure_environment()
-    context = build_context()
+    target_dir = configure_environment(args.output_dir)
+    context = build_context(target_dir)
     install_harness_patches()
     reset_database(context)
 
@@ -107,9 +108,12 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if all(result.passed for result in results) else 1
 
 
-def configure_environment() -> None:
+def configure_environment(output_dir: Path | None = None) -> Path:
     root = Path(__file__).resolve().parents[2]
-    target_dir = root / "target" / "harness"
+    target_dir = ((root / output_dir) if output_dir is not None else root / "target" / "harness").resolve()
+    target_dir.relative_to((root / "target").resolve())
+    if target_dir == (root / "target").resolve():
+        raise ValueError("Harness output must be a subdirectory of target/")
     target_dir.mkdir(parents=True, exist_ok=True)
     db_path = target_dir / "mindbridge-harness.sqlite3"
     for suffix in ["", "-wal", "-shm"]:
@@ -127,9 +131,10 @@ def configure_environment() -> None:
     os.environ["CHAT_RATE_LIMIT_PER_MINUTE"] = "10000"
     os.environ["EXCEL_PATH"] = str((target_dir / "mindbridge-risk-ledger.xlsx").as_posix())
     os.environ["RAG_EVAL_OUTPUT"] = str((target_dir / "rag-eval-report.json").as_posix())
+    return target_dir
 
 
-def build_context() -> HarnessContext:
+def build_context(target_dir: Path | None = None) -> HarnessContext:
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
@@ -144,7 +149,7 @@ def build_context() -> HarnessContext:
     database.SessionLocal = sessionmaker(bind=database.engine, autoflush=False, autocommit=False)
     return HarnessContext(
         root=Path(__file__).resolve().parents[2],
-        target_dir=Path(__file__).resolve().parents[2] / "target" / "harness",
+        target_dir=target_dir or Path(__file__).resolve().parents[2] / "target" / "harness",
         settings=settings,
         database=database,
     )
@@ -625,7 +630,8 @@ def run_api_harness(context: HarnessContext) -> dict:
         )
         metrics_data = runtime_metrics.json()
         expect(metrics_data["contextCompaction"]["completed"] >= 1, "runtime metrics did not count compaction")
-        expect(metrics_data["eventProjections"] >= 1, "runtime metrics did not count event projections")
+        expect(metrics_data["eventTypes"].get("GENERATION_OUTPUT_READY", 0) >= 1,
+               "workflow did not persist checked output before business finalization")
 
         runtime_events = client.get(
             f"/api/admin/runtime-events?request_id={foundations_request_id}",
@@ -638,7 +644,16 @@ def run_api_harness(context: HarnessContext) -> dict:
             {"CONTEXT_COMPACTION_STARTED", "CONTEXT_COMPACTION_COMPLETED"}.issubset(runtime_event_types),
             "runtime events are missing compaction lifecycle",
         )
-        expect(any(item.get("projection") for item in runtime_event_items), "runtime events exposed no projection summary")
+        expect("AGENT_BATCH_REQUESTED" not in runtime_event_types, "v2 workflow still schedules with events")
+        expect(all(item.get("projection") is None for item in runtime_event_items),
+               "v2 audit events should not duplicate complete checkpoints")
+        from app.agents.runtime_store import SqlAlchemyRuntimeStore
+        with context.session() as checkpoint_db:
+            checkpoint = SqlAlchemyRuntimeStore(checkpoint_db).load(foundations_request_id)
+            expect(checkpoint is not None and checkpoint.workflow_version == "workflow-v2",
+                   "request did not persist a v2 checkpoint")
+            expect(checkpoint.flow.current_stage.value == "COMPLETED" and checkpoint.response.final_response,
+                   "checkpoint is missing the completed response")
         expect(
             all("state_projection" not in item["payload"] for item in runtime_event_items),
             "runtime events API leaked full state projections",
@@ -794,7 +809,7 @@ def write_report(context: HarnessContext, results: list[CheckResult]) -> dict:
         "environment": {
             "databaseUrl": context.settings.database_url,
             "aiProvider": context.settings.ai_provider,
-            "agentFramework": "event_driven_blackboard",
+            "agentFramework": "checkpoint_workflow",
             "knowledgeVectorEnabled": context.settings.knowledge_vector_enabled,
         },
         "passed": all(result.passed for result in results),

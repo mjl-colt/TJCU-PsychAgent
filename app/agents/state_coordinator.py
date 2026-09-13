@@ -311,7 +311,7 @@ class BlackboardCoordinator:
     ) -> CoordinatorDecision:
         """Persist the generated text and close the whole user turn."""
 
-        if state.flow.current_stage != FlowStage.GENERATING or state.response is None:
+        if state.flow.current_stage not in {FlowStage.GENERATING, FlowStage.FINALIZING_RESPONSE} or state.response is None:
             return self._terminal(state, FlowStage.FAILED, "最终生成完成事件与当前阶段不一致")
         response = state.response.model_copy(update={"final_response": final_response})
         flow = state.flow.model_copy(update={"current_stage": FlowStage.COMPLETED, "error": None})

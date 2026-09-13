@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -37,10 +37,13 @@ class FlowStage(str, Enum):
     ROUTED = "ROUTED"
     RETRIEVING = "RETRIEVING"
     CONTEXT_READY = "CONTEXT_READY"
+    PREPARING_RESPONSE = "PREPARING_RESPONSE"
+    REVISING_RESPONSE = "REVISING_RESPONSE"
     PROMPT_REVIEW = "PROMPT_REVIEW"
     FINALIZING_PROMPT = "FINALIZING_PROMPT"
     READY_FOR_GENERATION = "READY_FOR_GENERATION"
     GENERATING = "GENERATING"
+    FINALIZING_RESPONSE = "FINALIZING_RESPONSE"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
 
@@ -83,6 +86,7 @@ class RuntimeEventType(str, Enum):
     CONTEXT_COMPACTION_FAILED = "CONTEXT_COMPACTION_FAILED"
     TURN_READY_FOR_GENERATION = "TURN_READY_FOR_GENERATION"
     GENERATION_STARTED = "GENERATION_STARTED"
+    GENERATION_OUTPUT_READY = "GENERATION_OUTPUT_READY"
     GENERATION_COMPLETED = "GENERATION_COMPLETED"
     GENERATION_FAILED = "GENERATION_FAILED"
     TURN_COMPLETED = "TURN_COMPLETED"
@@ -324,6 +328,10 @@ class BlackboardState(FrozenModel):
     response: ResponseState | None = None
     flow: FlowState = Field(default_factory=FlowState)
     revision: int = Field(default=0, ge=0)
+    # Missing version means a historical event-driven checkpoint. Never migrate
+    # an in-flight execution implicitly to a different workflow.
+    workflow_version: Literal["event-v1", "workflow-v2"] = "event-v1"
+    execution: WorkflowExecutionState | None = None
 
     @classmethod
     def create(
@@ -333,6 +341,7 @@ class BlackboardState(FrozenModel):
         session_id: str = "",
         request_id: str | None = None,
         prompt_injection_signals: tuple[str, ...] = (),
+        workflow_version: Literal["event-v1", "workflow-v2"] = "event-v1",
     ) -> "BlackboardState":
         return cls(
             request=RequestState(
@@ -341,7 +350,8 @@ class BlackboardState(FrozenModel):
                 session_id=session_id,
                 model_input=model_input,
                 prompt_injection_signals=prompt_injection_signals,
-            )
+            ),
+            workflow_version=workflow_version,
         )
 
 
@@ -366,6 +376,25 @@ class AgentExecutionOutcome(FrozenModel):
     attempts: int = Field(default=1, ge=1)
     duration_ms: float = Field(default=0.0, ge=0.0)
     error: str | None = None
+
+
+class WorkflowTask(FrozenModel):
+    command: AgentCommand
+    started: bool = False
+    outcome: AgentExecutionOutcome | None = None
+
+
+class WorkflowExecutionState(FrozenModel):
+    """Only the current step's tasks; flow.current_stage is the sole cursor.
+
+    An outcome is the completion receipt. There is no second completed-ID list.
+    Command revisions bind the stable step input, not receipt checkpoint writes.
+    """
+
+    tasks: dict[str, WorkflowTask]
+
+
+BlackboardState.model_rebuild()
 
 
 class RuntimeEvent(FrozenModel):

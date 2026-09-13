@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from app.agents.event_driven_runtime import EventDrivenAgentRuntimeService
+from app.agents.event_driven_runtime import AgentRuntimeService
 from app.agents.result import AgentStep
 from app.agents.runtime_lease import RuntimeLease, RuntimeLeaseBusyError, RuntimeLeaseManager
 from app.core.config import Settings
@@ -88,11 +88,12 @@ class MindBridgeAgentHarness:
         lease = self._acquire_lease(request_id)
         try:
             session = self._resolve_session(user, request.sessionId, original_input, request_id)
-            agent_run = EventDrivenAgentRuntimeService(self.db, self.settings).run(
+            agent_run = AgentRuntimeService(self.db, self.settings).run(
                 user,
                 session,
                 model_input,
                 request_id,
+                lease=lease,
             )
             return self._finish_run(user, session, original_input, model_input, agent_run, None)
         finally:
@@ -117,11 +118,12 @@ class MindBridgeAgentHarness:
         lease = self._acquire_lease(request_id)
         try:
             session = self._resolve_session(user, request.sessionId, original_input, request_id)
-            agent_run = await EventDrivenAgentRuntimeService(self.db, self.settings).run_async(
+            agent_run = await AgentRuntimeService(self.db, self.settings).run_async(
                 user,
                 session,
                 model_input,
                 request_id,
+                lease=lease,
             )
             return self._finish_run(user, session, original_input, model_input, agent_run, lease)
         except BaseException:

@@ -17,72 +17,54 @@
 
 ## 先背这一分钟项目介绍
 
-> 心理ai是一个事件驱动的多 Agent 心理支持系统。用户请求先经过脱敏和数据库租约控制，再进入强类型 Blackboard Runtime。Coordinator 同时调度 Understanding 和 Safety，Runtime 使用 batch 屏障、revision 和分区写权限校验并行结果；随后按 CHAT、CONSULT、RISK 路由，必要时由 Context 读取会话历史、压缩上下文、执行混合 RAG 并选择 Skill。Response 只组装带版本的 Prompt，Safety 必须审核同一个版本，批准后才进入最终生成。支持类文字完整缓冲，先过确定性禁止项/引用门，HIGH 再由独立 Safety 模型做结构化语义复审，通过后才以 SSE 发给用户。系统把 checkpoint 和事件日志同事务持久化，并使用 requestId、业务物化收据和工具幂等键处理重试及崩溃恢复。当前有 84 个单元测试和六套工程 Harness，定位是可以进入生产验收的单体 Agent Runtime，而不是已经完成所有学校危机制度和分布式基础设施的最终产品。
+> 心理ai是四个业务 Agent 加一个确定性 Coordinator 的心理支持工作流。新请求使用 workflow-v2：先并行理解和安全评估，每个任务结果先保存为 checkpoint 收据；收齐后统一校验合并 Blackboard，再按显式转换规则选择 CHAT、CONSULT 或 RISK。需要时由 Context 整理历史、RAG 和 Skill，Response 组装带版本的 Prompt，Safety 审核同一版本，通过后才生成。Event 只记录执行事实，不再承担调度。最终文本通过输出安全门后先保存待收尾 checkpoint，再落业务消息和工具任务，支持中断恢复与幂等。当前 104 项单元测试和六套 mock 工程 Harness 通过，但不代表真实模型正确率或生产压测完成。
 
-这段话如果被打断，优先讲清楚三个特点：
-
-1. Understanding 和 Safety 真并行，但 Agent 不能直接修改共享状态。
-2. checkpoint、事件和业务幂等支持中断恢复。
-3. Safety 审核的 Prompt 与最终发送给模型的是同一个版本。
+Coordinator 不调用 LLM，因此这里是“四个业务 Agent + 一个协调器”，不要说成五个 LLM Agent。
 
 ---
 
-## 问题一：请画出整个系统的运行流程，为什么叫事件驱动？
+## 问题一：系统怎样决定下一步？Event 还驱动流程吗？
 
-### 先说结论
-
-系统不是按固定时间轮询 Blackboard，也不是四个 Agent 互相随意聊天。Coordinator 收到事件后发布明确的 AgentCommand；Dispatcher 执行命令；Agent 完成事件再唤醒 Coordinator。
-
-### 一次请求怎样走完
+新流程的决策输入是“当前步骤 + 当前步骤任务收据 + 已校验的 Blackboard 业务数据”，不是 Event 类型。
 
 ```text
-浏览器发送 message + requestId
-→ Harness 校验长度、隐私脱敏
-→ 为 requestId 获取数据库租约
-→ 新建或恢复 Blackboard
-→ 发布 TURN_STARTED
-→ Coordinator 创建 Understanding + Safety 同批命令
-→ Dispatcher 并行执行两个 Agent
-→ Runtime 校验 schema、revision 和写权限
-→ 同批结果原子合并
-→ batch 屏障等待两个 commandId 都完成
-→ 选择 CHAT / CONSULT / RISK
-→ CONSULT/RISK 执行 Context：历史、压缩、RAG、Skill
-→ Response 组装 Prompt v1
-→ Safety Review v1
-→ Response 确认 Prompt v1
-→ READY_FOR_GENERATION
-→ SSE 调用最终模型
-→ 输出 Guardrail
-→ 保存助手消息和工具任务
-→ GENERATION_COMPLETED + TURN_COMPLETED
+Harness：输入、Session、requestId、租约
+→ ANALYZING：Understanding + Safety 并行
+→ 单个结果返回就保存 execution.tasks[commandId].outcome
+→ 当前步骤所有任务都有结果：唯一一道完成屏障
+→ 校验并批量合并 Blackboard
+→ Coordinator 根据 intent/risk 选路线
+→ CHAT+LOW 跳过 Context；其余进入 RETRIEVING
+→ PREPARING_RESPONSE：Response 组装 Prompt
+→ PROMPT_REVIEW：Safety 审核
+   不通过 → REVISING_RESPONSE → 再审，达到预算则失败
+   同版本通过 → READY_FOR_GENERATION
+→ GENERATING：外层 SSE 服务调用最终模型并检查输出
+→ FINALIZING_RESPONSE：已检查文本进入 checkpoint
+→ 消息保存和工具任务派发
+→ COMPLETED
 ```
 
-普通 `CHAT + LOW` 可以跳过完整 Context/RAG；咨询和风险请求需要上下文支持。
+Runtime 直接 await Dispatcher 的异步任务，不轮询 Blackboard、不通过 asyncio.Queue 调度。Dispatcher 只负责执行命令、并发、超时、重试和降级；它不决定业务路线。
 
-### 为什么不是轮询
+Event 仍会追加 TURN_STARTED、AGENT_STARTED、AGENT_COMPLETED/FAILED、STATE_UPDATED 和生成生命周期等审计记录，但不会再次唤醒 Coordinator，也不需要 AGENT_BATCH_REQUESTED 来传递命令。历史 event-v1 checkpoint 才走保留的旧事件 Runtime。
 
-Runtime 等待的是 `asyncio.Queue.get()`：
+### 决策规则
 
-```text
-没有事件 → 协程挂起，不消耗 CPU 检查状态
-事件到达 → 立即唤醒并处理
-```
+| 当前步骤 | 判断依据 | 下一步 |
+|---|---|---|
+| 初始 RECEIVED | 尚无活动任务 | 创建理解、安全两条命令 |
+| ANALYZING | 所有任务有收据且结果合法 | HIGH 风险或 RISK 意图走 RISK；否则 CONSULT 意图或 MEDIUM 风险走 CONSULT；否则 CHAT |
+| RETRIEVING | Context 合法 | PREPARING_RESPONSE |
+| PREPARING_RESPONSE / REVISING_RESPONSE | 新 Prompt 合法 | PROMPT_REVIEW |
+| PROMPT_REVIEW | 批准且审查版本匹配 | READY_FOR_GENERATION |
+| PROMPT_REVIEW | 拒绝、审查失败或版本不匹配 | 预算内修订，否则 FAILED |
 
-代码中虽然有事件消费循环，但循环是在等待事件，并且有最大事件数和空闲超时，不是每隔一秒读取 Blackboard。
-
-### 画图时要额外标出的四类边界
-
-| 边界 | 图上应该标什么 |
-|---|---|
-| 并发边界 | 两个 Agent 使用同一 revision 的不可变快照，结果批量合并 |
-| 持久化边界 | 调度、outcome、阶段变化、生成开始和最终完成都持久化 |
-| 安全边界 | 硬规则、Safety Review、版本门禁、输出 Guardrail |
-| 副作用边界 | 消息、报告、工具分别使用业务幂等键 |
+运行位置仍使用 flow.current_stage，避免另造第二个游标。完整逐步参数见《Runtime整体流程例子梳理》。
 
 ### 面试回答
 
-> 我的事件驱动不是把 while 循环换个名字。Coordinator 只在 TURN_STARTED 或 Agent outcome 到达时运行，并通过 AgentCommand 触发下一批任务。Agent 不直接修改共享状态，只返回局部更新。Runtime 校验后原子合并，再把完成事件交给 Coordinator。这样调度、状态和 Agent 逻辑是分开的，也能明确记录每次状态推进的原因。
+> 我把控制流程从事件处理里收敛成显式工作流。Coordinator 定义步骤和转换规则，Runtime 负责执行和持久化，Dispatcher 负责调用 Agent。Blackboard 保存业务状态，checkpoint 额外保存任务收据，Event 只做审计。这样看当前步骤和结果就能解释下一步，也能从 checkpoint 直接恢复。
 
 ---
 
@@ -96,7 +78,7 @@ Runtime 等待的是 `asyncio.Queue.get()`：
 | LangGraph | 低层有状态编排 Runtime | 长流程、可恢复执行、人工审批、确定性步骤和 Agent 步骤混合 | node + edge + state |
 | AutoGen | 消息驱动的多 Agent 框架 | 多 Agent 对话、协作研究、分布式 Agent、代码执行 | Agent 通过消息和 Runtime 协作 |
 | CrewAI | 角色化 Agent 团队加工作流 | 研究员/分析师/写作者等角色协作，或用 Flow 控制业务步骤 | Crew/Task/Process 或 event-driven Flow |
-| 心理ai Runtime | 项目内的专用执行器 | 固定四 Agent、高风险安全路由、版本审查和业务幂等 | Command + Event + 强类型 Blackboard |
+| 心理ai Runtime | 项目内的专用执行器 | 固定四 Agent、高风险安全路由、版本审查和业务幂等 | Step + Task Receipt + 强类型 Blackboard |
 
 LangChain 当前的 `create_agent` 底层也使用 LangGraph；LangGraph 可以脱离完整 LangChain 独立使用。可参考 [LangChain Agents 官方文档](https://docs.langchain.com/oss/python/langchain/agents) 和 [LangGraph 官方概览](https://docs.langchain.com/oss/python/langgraph/overview)。
 
@@ -126,7 +108,7 @@ AutoGen 官方把 AgentChat 定位为会话式单/多 Agent 上层 API，把 Cor
 不是因为 LangGraph 不成熟，而是项目流程明确、业务安全约束很强：
 
 - 每个 Agent 只能写自己的 Blackboard 分区；
-- Understanding 和 Safety 的同批结果必须做 revision 校验和原子合并；
+- Understanding 和 Safety 的同批结果必须按命令输入 revision 校验和原子合并；
 - outcome 必须先落库，再交给 Coordinator；
 - requestId 要贯穿租约、checkpoint、消息、报告和工具任务；
 - Safety fail-closed 和同版本 Prompt 审查不能被配置绕过；
@@ -155,177 +137,87 @@ AutoGen 官方把 AgentChat 定位为会话式单/多 Agent 上层 API，把 Cor
 
 ---
 
-## 问题三：BlackboardState 有什么作用？为什么不用全局变量？并行怎么避免冲突？
+## 问题三：Blackboard 怎么更新？并行怎么避免冲突？
 
-### BlackboardState 是什么
-
-它相当于本项目的 AgentState，是“一次 requestId 当前已经知道什么、运行到哪里”的权威状态：
+Blackboard 是一次 requestId 的强类型工作状态，不是全局变量：
 
 ```text
-BlackboardState
-├─ request        请求身份、脱敏输入、注入信号
-├─ understanding 当前意图和主题
-├─ safety        当前风险、约束、Prompt Review
-├─ context       历史摘要、RAG 证据、Skill
-├─ response      Prompt messages、版本、hash、最终文本
-├─ flow          阶段、路由、Agent 状态、活动批次
-└─ revision      状态版本
+request / understanding / safety / context / response：业务数据
+flow.current_stage：当前执行位置
+execution.tasks：当前步骤的命令、started 标记、outcome 收据
+workflow_version：新旧执行语义
+revision：checkpoint 状态版本
 ```
 
-模型使用 Pydantic 强类型并设置为不可变。Agent 得到状态快照后只能返回 `AgentStateUpdate`，不能直接修改 Blackboard。
+Agent 只能读取隔离的快照并返回自己分区的 AgentStateUpdate。Dispatcher 将结果包成 AgentExecutionOutcome，Runtime 验证命令身份、输入版本、字段类型和分区写权限。
 
-### 为什么不能使用全局变量
+并行结果不是返回一个就直接覆盖业务分区：
 
-假设小林和小王同时发送消息，全局变量可能出现：
+1. 每个结果返回后，先写 execution.tasks 中对应的收据并提交 checkpoint。
+2. 当前步骤所有任务有收据后，统一校验、合并业务分区。
+3. Coordinator 计算下一步；合并后的业务数据与下一步命令在同一次 checkpoint 提交。
+4. 提交成功后才执行下一步任务。
 
-```text
-小林写入 risk=LOW
-→ 小王写入 risk=HIGH
-→ 小林的 Response 读取到小王的 HIGH
-```
+“Blackboard 不可变”指更新时创建新模型并让 Runtime 的局部 state 引用指向它；不是原地改旧对象。数据库按 requestId 更新最新 checkpoint 行，事件表则追加记录。嵌套容器并非语言级深冻结，所以 Dispatcher 还给每个 Agent 独立深拷贝快照。
 
-除此之外，全局变量还有这些问题：
+### 两种版本不要混淆
 
-- 进程重启后消失，不能 checkpoint 恢复；
-- 多进程和多容器之间根本不共享；
-- 并行 Agent 会产生竞态和覆盖；
-- 没有 requestId 和 revision，旧结果可能覆盖新结果；
-- 测试之间容易污染；
-- 心理数据串到另一位用户属于严重隐私事故。
+假设两个命令都绑定 input revision=1。理解结果先落收据后 checkpoint revision 可以变为 3，但 Safety 仍合法地返回基于 revision=1 的结果。收据保存没有改变这批任务读取的业务输入。
 
-### 并行合并怎样工作
-
-Understanding 和 Safety 都接收 revision 1：
-
-```text
-Understanding → 只能返回 understanding 分区
-Safety        → 只能返回 safety 分区
-```
-
-Runtime 收齐后检查：
-
-1. command 是否绑定当前 revision；
-2. Agent 是否写入自己的分区；
-3. 数据是否符合 Pydantic schema；
-4. 同一批是否重复写相同分区。
-
-全部合法才一次合并为 revision 2。之后才让 Coordinator 消费完成事件。
-
-### revision 解决什么
-
-如果一个慢 Agent 基于 revision 1 运行，但当前状态已经变成 revision 3，它的结果属于过期结果，Runtime 会拒绝写入。这类似数据库的乐观锁。
-
-### 面试回答
-
-> BlackboardState 是一次请求的显式工作内存和状态机载体。它是强类型、不可变并且带 revision 的。每个 Agent 只读同一版本快照并返回自己的局部更新，Runtime 统一校验和合并。全局变量无法隔离用户、无法跨进程恢复，也没有版本和权限边界，在并发心理场景中可能直接造成数据串线。
+因此不能简单用“命令版本不等于最新 checkpoint 版本”拒绝结果。Runtime 保留命令绑定的输入版本，恢复时重建同一业务快照；真正不属于本步骤、本命令或输入版本的结果才被拒绝。
 
 ---
 
-## 问题四：checkpoint、event journal、Harness、租约和幂等到底是什么关系？
+## 问题四：checkpoint、Event、Harness、租约和幂等是什么关系？
 
-这是最容易被连续追问的大题，可以先记住一句话：
-
-```text
-租约解决“现在谁能执行”；
-checkpoint 解决“执行到了哪里”；
-event journal 解决“状态为什么变成这样”；
-materialization 解决“业务数据是否已经落地”；
-幂等键解决“重复执行会不会产生第二份副作用”。
-```
-
-### 五类数据各自负责什么
-
-| 数据 | 作用 |
+| 对象 | 职责 |
 |---|---|
-| `RuntimeLease` | 防止两个进程同时处理相同 requestId |
-| `BlackboardState` | 当前请求的权威运行状态 |
-| `agent_runtime_checkpoints` | 每个 requestId 最新 Blackboard 快照，方便快速恢复 |
-| `agent_runtime_events` | 追加式事件流水，包含可重放的 Agent outcome |
-| `AgentTurnMaterialization` | 用户消息、报告、最终回复的业务落地收据 |
+| Blackboard | 当前业务状态、执行位置和任务收据 |
+| agent_runtime_checkpoints | 每个 requestId 最新持久快照；v2 恢复权威 |
+| agent_runtime_events | 追加审计事实；v2 不携带整份 state_projection，也不靠它调度或重建 |
+| agent_runtime_leases | requestId 执行所有者和有效期 |
+| agent_turn_materializations | 用户消息、报告、最终回复、工具派发的业务落地收据 |
+| tool_jobs / dead_letter_records | 后台工具执行与失败补偿 |
 
-### 为什么不用 Redis 分布式锁，而使用数据库租约
+生产配置使用 MySQL；此次自动回归使用隔离 SQLite。Redis 仍是短期会话记忆，不是 v2 流程队列。显式关闭持久化的 Null store 不具备跨进程恢复保证。
 
-准确说法不是“项目没用分布式锁”，而是“项目没有把 Redis 锁作为最终执行权依据”。`agent_runtime_leases` 是数据库实现的分布式租约：多个实例用 `request_id` 唯一约束竞争一行，行中保存 `owner_id` 和 `lease_until`。
+### checkpoint 保存时间点
 
-这个选择与业务场景有关：一轮 Agent 编排可能持续数秒到数分钟，而且必须在崩溃后根据 checkpoint 恢复。checkpoint、event journal、materialization 和业务唯一键都在 MySQL；租约也放在 MySQL，恢复器只依赖一个权威数据源就能回答“谁能执行、执行到哪、哪些结果已落地”。只用 Redis 锁会把所有权放在 Redis、执行状态放在 MySQL，增加加锁成功但数据库写失败、锁过期但旧实例仍运行、Redis 重启后锁状态丢失等跨存储协调问题。
+| 时机 | 保存什么 |
+|---|---|
+| 初始调度 | ANALYZING + 两个任务命令；提交后才允许调用 Agent |
+| 调用前 | 对应任务 started=true |
+| 每个任务返回 | 该任务 outcome 收据；无需等同伴返回 |
+| 步骤收齐 | 业务合并 + 下一阶段 + 下一阶段任务，一次提交 |
+| Prompt 审核通过 | READY_FOR_GENERATION |
+| 最终模型调用前 | GENERATING |
+| 合法完整输出就绪 | FINALIZING_RESPONSE + final_response |
+| 业务消息与工具派发确认后 | COMPLETED |
 
-Redis 锁更适合毫秒级、高竞争的短临界区；当前 requestId 冲突率低、任务时间长，更关注可恢复性而不是极限抢锁吞吐。租约的续期和释放都匹配 `request_id + owner_id`，SSE 期间周期续租，丢失 owner 后立即停止。租约仍不等于 exactly-once，重复副作用最终由 commandId、eventId、唯一键和 materialization 兜住。
+一次 checkpoint 与对应审计事件同事务提交。v2 保存失败必须停止，不能在没存稳任务的情况下继续调用后续 Agent。
 
-面试时可以这样回答：
+### 恢复直接看什么
 
-> 数据库租约本身也是分布式协调。我没有只用 Redis 锁，因为本项目是可中断恢复的长任务，执行权、checkpoint 和业务幂等状态都以 MySQL 为权威。把锁单独放进 Redis 会增加跨存储一致性窗口。当前竞争量下，MySQL 租约的性能足够，并且更便于恢复和审计；未来热点竞争升高时，可以增加 Redis 作为前置快速互斥，但不能用它代替数据库唯一约束和业务幂等。
+- started=true 但 outcome=null：沿用 commandId 重跑此任务。
+- outcome 已保存：直接复用；同批其他任务缺失就只补缺失任务。
+- 全部收据已保存但尚未合并：直接合并推进，不再调用这些 Agent。
+- GENERATING 中断：回到 READY_FOR_GENERATION，重新生成完整文本，不拼接半截 token。
+- FINALIZING_RESPONSE：复用已经检查并保存的文本，补消息和工具任务派发，不再调用最终模型。
+- COMPLETED：重放已有结果。
 
-### checkpoint 什么时候保存
+模型已经返回、收据尚未提交就崩溃时，仍可能再次调用模型。这是可恢复的至少一次执行，不是外部模型调用 exactly-once。
 
-不是每隔几秒保存，而是在重要状态变化时保存：
+### 为什么使用数据库租约
 
-| 时机 | 保存内容 | 中断后有什么用 |
-|---|---|---|
-| 创建首批命令 | ANALYZING、active_batch | 知道应该执行哪两个 Agent |
-| 模型调用前 | BATCH_REQUESTED、AGENT_STARTED | 知道命令已经开始但可能没结果 |
-| Agent 返回后 | outcome、合并后的 state | 已完成模型不需要再调用 |
-| Coordinator 消费结果 | completed commandId、下一阶段 | 保存并行屏障进度 |
-| Context 压缩 | STARTED/COMPLETED/FAILED | 识别半截压缩 |
-| Prompt 审查 | Prompt version、review | 恢复审核对应关系 |
-| Prompt 就绪 | READY_FOR_GENERATION | 断线后直接重新生成 |
-| SSE 开始 | GENERATING | 识别生成中断 |
-| 最终文本保存 | COMPLETED、final_response | 重放最终答案 |
+执行权、checkpoint 和业务收据在同一个数据库中，便于同事务校验。编排和 SSE 都周期续租；checkpoint 写入必须在事务内确认 owner 与未过期租约。失去租约会停止执行，旧 owner 不能继续提交状态。租约过期后新 owner 可以接管，但外部模型或邮件仍需各自的幂等与补偿策略；当前实现不等于外部副作用的完整 fencing 协议。
 
-同一次状态推进的 checkpoint 和相关事件通过一个数据库事务提交，要么一起成功，要么一起回滚。
+### Harness 的边界
 
-### 为什么 checkpoint 和事件都需要
+Harness 是本项目请求接入与业务物化层：输入、Session、租约、Runtime 调用、消息、报告和工具计划。不是“Runtime 之外一切代码都叫 Harness”；认证属于 HTTP 层，最终生成生命周期由 SSE 服务和 lifecycle 协作完成。
 
-如果只存事件，每次恢复都要从第一条重算；如果只存 checkpoint，只知道现在是什么，不知道哪些 Agent 已调用以及结果如何产生。
+### 旧版兼容
 
-```text
-checkpoint → 快速恢复
-event journal → 审计、校验、重放 outcome
-```
-
-事件上的状态投影还有 SHA-256 hash。恢复器比较投影与 checkpoint revision，投影损坏时回退 checkpoint。
-
-### 四个具体崩溃例子
-
-#### 例一：只有 AGENT_STARTED，没有 outcome
-
-说明模型可能在调用中崩溃。恢复时保留原 batchId 和 commandId，重新执行缺少结果的命令。
-
-#### 例二：outcome 已保存，Coordinator 还没消费
-
-恢复器直接重放相同 commandId 的 outcome，不重新调用已经完成的模型。
-
-#### 例三：SSE 在 GENERATING 阶段断掉
-
-启动或重试时回到 `READY_FOR_GENERATION`。不能从某个 token 精确续写，否则可能拼出矛盾内容，而是重新生成完整回答。
-
-#### 例四：助手消息已经保存，但 Runtime 终态没写
-
-从 materialization 读取已经保存的 `final_response`，不再生成第二遍，然后补齐 `GENERATION_COMPLETED` 和 `TURN_COMPLETED`。
-
-### requestId、sessionId、commandId、eventId 不要混
-
-```text
-sessionId → 一段用户会话
-requestId → 一次可以安全重试的用户请求
-batchId   → 一批并行 Agent 命令
-commandId → 一次 Agent 调用身份
-eventId   → 一条持久事件身份
-```
-
-相同 requestId 只能用于同一用户、同一会话和同一脱敏输入。数据库租约未过期时，第二个进程得到 409；租约过期后可以由其他进程接管。
-
-### Harness 和 Runtime 的边界
-
-```text
-Harness：输入、session、租约、调用 Runtime、业务消息、报告、工具和 SSE 接入
-Runtime：Agent 命令、Blackboard、事件、批次屏障、checkpoint 和恢复
-```
-
-checkpoint 不能代替业务收据，因为 Runtime 状态与聊天消息、报告不一定在同一个事务里。
-
-### 面试回答
-
-> 我的恢复设计不是只保存一个 JSON。租约控制执行所有权，checkpoint 保存最新状态，event journal 保存过程和可重放 outcome，materialization 记录业务是否落地。只有 STARTED 没 outcome 就重做原 command；outcome 已保存就直接重放；最终文本已物化就补终态而不再生成。这样把执行恢复和业务幂等分开处理。
+历史 checkpoint 没有 workflow_version 时按 event-v1 解读，仍走旧 EventBus、active_batch 和事件投影恢复。新请求明确写 workflow-v2，不把旧状态强行迁移到新语义。
 
 ---
 
@@ -420,14 +312,15 @@ Safety response_constraints
 
 ### Safety 第二次执行
 
-Safety Review 直接检查这组真实 messages：
+Safety Review 检查真实 messages 与强类型安全契约的一致性：
 
-- 高风险 Prompt 是否要求确认当前安全；
-- 是否提供现实可信任支持和紧急渠道；
-- 是否包含不诊断约束；
-- 是否出现药物剂量或危险操作；
-- 是否超过长度；
-- review version 是否等于 response version。
+- policy_contract 是否与当前风险、回复模式、RAG 证据推导出的要求一致；
+- Prompt 是否携带匹配的契约 SHA-256；
+- 不诊断、当前安全、现实支持和紧急升级等布尔约束是否正确；
+- 是否出现危险指令、超过长度或缺少约定证据标签；
+- review.prompt_version 是否等于 response.prompt_version。
+
+这些是确定性契约校验，不依赖某一句固定中文；最终 HIGH 回复另有独立语义复审。
 
 v1 审批后如果 Response 变成 v2，v1 批准立即失效，v2 必须重新审。
 
@@ -726,7 +619,7 @@ Dispatcher    → 对整个 Agent 命令做超时、重试和降级
 
 | 位置 | fallback |
 |---|---|
-| Understanding | 通过硬风险词、心理词和普通任务词确定 RISK/CONSULT/CHAT |
+| Understanding | 硬风险策略命中为 RISK；其余模型故障保守进入 CONSULT |
 | Safety | 高精度危机策略命中为 HIGH；其他模型故障至少 MEDIUM，绝不静默 LOW |
 | Context | 返回只包含当前脱敏输入的最小 Context |
 | Response | 使用系统内置安全 Prompt，仍必须经过 Safety Review |
@@ -769,7 +662,7 @@ fallback 也必须是强类型、可审计、可持久化的结果。
 
 ### 面试回答
 
-> Node 层由 Dispatcher 做超时、一次重试和指数退避，耗尽后进入强类型 fallback；模型网关另有主备和熔断。RAG 的 query 改写失败用原问题，向量失败退 BM25。Tools 使用持久队列、最多三次线性退避、依赖检查和 dead letter。进程崩溃则不靠内存重试，而是通过 checkpoint、event outcome、原 commandId 和数据库租约恢复。Safety 始终 fail-closed。
+> Node 层由 Dispatcher 做超时、一次重试和指数退避，耗尽后进入强类型 fallback；模型网关另有主备和熔断。RAG 的 query 改写失败用原问题，向量失败退 BM25。Tools 使用持久队列、最多三次线性退避、依赖检查和 dead letter。进程崩溃则不靠内存重试，而是通过 checkpoint 内任务 outcome 收据、原 commandId 和数据库租约恢复。Safety 始终 fail-closed。
 
 ---
 
@@ -853,7 +746,7 @@ Response 组装的 Prompt 必须由 Safety 审核同一版本。最终回答还�
 ### 当前已经验证什么
 
 ```text
-84 个 unittest
+104 个 unittest（2026-09-12）
 Risk Safety Harness
 Agent Routing Harness
 Standard Skills Harness
@@ -866,7 +759,7 @@ Tool Queue Harness
 
 ### 并行性能怎样解释
 
-确定性异步 I/O 基准：
+历史确定性异步 I/O 基准（不是此次 v2 真实模型压测）：
 
 ```text
 Understanding：80ms
@@ -890,11 +783,11 @@ python scripts/evaluate_model_quality.py \
   --repeats 3
 ```
 
-当前不能给出真实提升百分比：本机 Ollama 和 Docker daemon 未运行，仓库也没有 GGUF 权重，自动报告因此写成 `BLOCKED`。这反而是正确的工程回答——评测条件没满足就不编数字。模型到位后先要求安全关键题不退化，再比较总体质量和延迟；后续可用独立 judge 模型补充语气、帮助性和 groundedness，但要保留代码规则与人工抽检。
+历史模型 A/B 报告因运行环境或模型缺失写成 `BLOCKED`；此次 v2 回归仅使用 mock，没有重新验证真实模型 A/B，所以仍不能给出真实提升百分比。这反而是正确的工程回答——评测条件没满足就不编数字。模型到位后先要求安全关键题不退化，再比较总体质量和延迟；后续可用独立 judge 模型补充语气、帮助性和 groundedness，但要保留代码规则与人工抽检。
 
 面试可直接回答：
 
-> 我把微调评估做成 paired offline eval，而不是看 demo。两模型固定 prompt、seed、temperature 和样本，先用确定性 rubric 检查安全边界与关键概念，再看分场景通过率、延迟和胜负。当前环境缺模型，所以我明确报告未完成，不虚构提升；这套脚本可以在模型交付后直接生成真实增量。
+> 我把微调评估做成 paired offline eval，而不是看 demo。两模型固定 prompt、seed、temperature 和样本，先用确定性 rubric 检查安全边界与关键概念，再看分场景通过率、延迟和胜负。当前真实 A/B 尚未完成，所以我明确报告未完成，不虚构提升；这套脚本可以在模型交付后直接生成真实增量。
 
 ### 能不能直接说“已经生产可用”
 
@@ -913,25 +806,14 @@ python scripts/evaluate_model_quality.py \
 - MySQL 高可用、备份和恢复演练；
 - OpenTelemetry/Prometheus、成本和告警控制面；
 - 真实匿名数据上的风险漏报、误报和注入红队；
-- 多实例 Broker、ACK、outbox、DLQ 和 fencing；
+- 若拆成跨服务 Worker，还需 Broker 投递协议、outbox、ACK、DLQ 与外部副作用 fencing；
 - 正式 embedding A/B 和 GPU 并发压测。
 
-### 为什么没有马上接 Kafka
+### 为什么现在不需要 Kafka 驱动请求
 
-当前请求内 mailbox 是 `asyncio.Queue`，关键事件已持久化。换成 Kafka/Redis Streams 不只是换一个队列类，还必须一起设计：
+v2 没有请求内事件队列。Runtime 直接执行当前步骤，通过数据库 checkpoint 和任务收据恢复；多个实例的 requestId 接管由数据库租约控制。这不意味着每个 Agent 已支持跨机器分发。
 
-```text
-outbox
-消费者组和 ACK
-可见性超时和重投
-顺序和分区键
-dead letter
-fencing token
-跨服务 trace
-业务幂等
-```
-
-没有这些语义就声称“分布式”，只会制造更难定位的重复副作用。
+如果未来拆出独立 Worker，才需要另行设计命令持久投递、ACK、重投、outbox 和消费者幂等。Kafka 是一种可选基础设施，不是“符合规范”的必选条件。
 
 ### Agent 自进化怎么做
 
@@ -987,7 +869,7 @@ fencing token
 - 补丁、命令、退出码和文件变化全部审计；
 - 模型只能提出操作，沙箱决定是否允许执行。
 
-心理ai的 Command、Outcome、revision、checkpoint、最大事件数和 Tool Governance 可以迁移为 Coding Agent Runtime。
+心理ai的 Command、Outcome、revision、checkpoint、最大步骤数和 Tool Governance 可以迁移为 Coding Agent Runtime。
 
 ### Java 和 Python 协作
 
@@ -1070,10 +952,10 @@ VAD/降噪
 | 项目用了 LangGraph，或者自研 Runtime 比 LangGraph 强 | 当前没使用 LangGraph；专用 Runtime 在当前约束下更直接可控，但生态能力需要自己补 |
 | 有 checkpoint 就不会重复 | checkpoint 负责恢复，副作用还需要幂等 |
 | 使用 asyncio 就一定更快 | 调度并行已验证，单 GPU 是否提速要另测 |
-| RAG Recall 100% 证明 embedding 很好、已经没有幻觉 | 当前 68 条 Harness 主要验证 BM25 兜底检索和负样本拒答；Chroma 尚未构建，回答级 groundedness 与 embedding A/B 尚未完成 |
+| RAG Recall 100% 证明 embedding 很好、已经没有幻觉 | 当前 68 条 Harness 主要验证 BM25 兜底检索和负样本拒答；本机已有实体 Chroma 索引，但回答级 groundedness 与 embedding A/B 尚未完成 |
 | Prompt 注入已经百分之百防住 | 采用纵深防御，确保模型被诱导后也没有额外权限 |
 | Safety 模型肯定不会错 | 硬规则、保守降级、版本审核和输出门共同降低风险 |
 | 四个 Agent 都必须有私有记忆 | 只有存在真实消费者、来源和治理时才应该保存记忆 |
 | 工具失败就多重试几次 | 必须区分错误类型、限制预算、保证幂等并进入死信 |
-| READY_FOR_GENERATION 就完成了 | 它只代表 Prompt 就绪，最终文本保存后才是 COMPLETED |
+| READY_FOR_GENERATION 就完成了 | 它只代表 Prompt 就绪，文本先进入 FINALIZING_RESPONSE，业务收尾完成后才是 COMPLETED |
 | 沙箱、Java 和座舱我也做过 | 明确当前没实现，再说明可以迁移的设计能力 |

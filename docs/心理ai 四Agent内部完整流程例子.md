@@ -10,7 +10,7 @@
 
 隐私清理后，Runtime 给四个 Agent 看的当前输入叫 `model_input`。它被标记为不可信数据，用户不能通过输入改变 Agent 权限。
 
-四个 Agent 不会同时随意聊天。Coordinator 发一条明确命令，Agent 才执行；Agent 只能返回自己的局部结果，最后由 Runtime 校验和合并。
+当前新请求使用 workflow-v2。Coordinator 创建当前步骤的明确命令，Runtime 提交 checkpoint 后交给 Dispatcher 执行；Agent 返回局部结果，每个 outcome 先单独保存成任务收据，收齐后统一合并业务分区。Event 只做审计，不传递命令或驱动下一步。
 
 ## 1. UnderstandingAgent 收到 UNDERSTAND
 
@@ -229,7 +229,7 @@ mindbridge:short-term-memory:session-xiaolin-01
        ↓
 Context 返回局部 ContextState
        ↓
-原子合并后：CONTEXT_COMPACTION_COMPLETED
+Outcome 收据保存时：CONTEXT_COMPACTION_COMPLETED
 ```
 
 完成事件只记录原消息数、保留消息数、摘要长度和摘要 hash，不把摘要正文写进指标。开始后崩溃会形成可识别的未闭合压缩，恢复时使用相同 Context commandId 重跑，不会把半成品写进 Blackboard。
@@ -477,21 +477,13 @@ Coordinator 发送 `REVISE_RESPONSE`。Response 把 issues 放进修订要求，
 
 只有 `safe_fallback=true` 的系统内置兜底 Prompt 可以被降级审核批准；普通候选 Prompt 不会因为审核器故障自动通过。
 
-## 6. ResponseAgent 第二次收到 FINALIZE_RESPONSE
+## 6. Coordinator 确认 Prompt 就绪（不再调用一次 Response）
 
-它检查已经存在候选 Prompt，把：
+workflow-v2 中，Safety Review 通过且 safety.prompt_review.prompt_version 与 response.prompt_version 匹配后，Coordinator 确定性地把 response.generation_status 和 flow.current_stage 设为 READY_FOR_GENERATION，再由 Runtime 提交 checkpoint。
 
-```yaml
-generation_status: WAITING_FOR_SAFETY_REVIEW
-```
+这一步没有新的 AgentCommand、模型调用或 FINALIZE_RESPONSE 任务。Runtime 的状态门再次检查审批和版本，避免绕过安全审核。
 
-改成：
-
-```yaml
-generation_status: READY_FOR_GENERATION
-```
-
-只返回 response 分区。Coordinator 随后把整个状态放到 `READY_FOR_GENERATION`。是否完成直接由阶段判断：此阶段只是 Prompt 已就绪，只有最终回复保存后才进入 `COMPLETED`。
+历史 event-v1 checkpoint 仍保留旧的 Response FINALIZE_RESPONSE 调用，仅供兼容恢复。
 
 ## 7. 最终文字到底是谁生成的
 
@@ -515,6 +507,8 @@ generation_status: READY_FOR_GENERATION
 语义审核返回非 JSON、字段缺失、模型超时或任一必要项为 false，都按 fail closed 处理。通过后才分片发送；不通过则整段换成代码内置、已人工审阅的高风险安全回答。因此被拒绝的原始文字不会先泄漏几个 token 给浏览器。`GENERATION_COMPLETED` 事件记录机器可检索的问题 ID 和实际 `citedEvidenceIds`，但不复制整段敏感回答。
 
 生产 Prompt 现已从 Python 迁到 `app/prompts/*.md`。每份文件有 `name`、`vN` 版本和正文 hash；缺占位符、多传占位符或模板缺失会直接报错。Python 代码只负责把不可信数据放进对应槽位，trace 能看到实际 `prompt_template_version`，不再靠搜索源代码猜当时用了哪版文字。
+
+v2 在合法最终文本就绪后先保存 FINALIZING_RESPONSE + final_response，再保存助手消息和派发工具任务，最后提交 COMPLETED。若业务收尾失败，重试复用 checkpoint 中已检查的文字，不再调用最终模型。没有输出的空流视为失败；Prompt 审核耗尽也不允许进入最终生成。
 
 ## 8. 为什么现在删除四个 Agent 的“私有记忆”
 

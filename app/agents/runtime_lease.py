@@ -86,6 +86,7 @@ class RuntimeLeaseManager:
             .filter(
                 AgentRuntimeLease.request_id == lease.request_id,
                 AgentRuntimeLease.owner_id == lease.owner_id,
+                AgentRuntimeLease.lease_until > current,
             )
             .update(
                 {

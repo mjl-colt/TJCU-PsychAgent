@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import timedelta
 from collections.abc import Sequence
 from typing import Protocol
 
@@ -15,6 +16,8 @@ from app.agents.event_projection import (
     strip_state_projection,
 )
 from app.models.entities import AgentRuntimeCheckpoint, AgentRuntimeEventRecord
+from app.models.entities import AgentRuntimeLease, now
+from app.agents.runtime_lease import RuntimeLease, RuntimeLeaseLostError
 
 
 logger = logging.getLogger(__name__)
@@ -65,9 +68,10 @@ class SqlAlchemyRuntimeStore:
     a transition that cannot be recovered after a process crash.
     """
 
-    def __init__(self, db: Session, persistence_required: bool = True):
+    def __init__(self, db: Session, persistence_required: bool = True, lease: RuntimeLease | None = None):
         self.db = db
         self.persistence_required = persistence_required
+        self.lease = lease
 
     def save(self, state: BlackboardState, event: RuntimeEvent) -> None:
         self.save_many(state, (event,))
@@ -76,16 +80,32 @@ class SqlAlchemyRuntimeStore:
         """Persist one state transition and all its audit events in one transaction."""
 
         try:
+            if self.lease is not None:
+                if self.lease.request_id != state.request.request_id:
+                    raise RuntimeLeaseLostError("租约与当前请求不匹配")
+                current = now()
+                owned = self.db.query(AgentRuntimeLease).filter(
+                    AgentRuntimeLease.request_id == self.lease.request_id,
+                    AgentRuntimeLease.owner_id == self.lease.owner_id,
+                    AgentRuntimeLease.lease_until > current,
+                ).update({AgentRuntimeLease.lease_until: current + timedelta(seconds=self.lease.ttl_seconds),
+                          AgentRuntimeLease.updated_at: current}, synchronize_session=False)
+                if owned != 1:
+                    raise RuntimeLeaseLostError("checkpoint 提交时执行租约已丢失")
             persisted_state = state
             checkpoint = (
                 self.db.query(AgentRuntimeCheckpoint)
                 .filter(AgentRuntimeCheckpoint.request_id == state.request.request_id)
+                .populate_existing()
+                .with_for_update()
                 .first()
             )
+            if checkpoint is not None and state.revision < checkpoint.state_version:
+                raise RuntimePersistenceError("拒绝旧版本 checkpoint 和审计写入")
             revision_advanced = checkpoint is None or state.revision > checkpoint.state_version
             persisted_events = (
                 attach_state_projection(persisted_state, events)
-                if revision_advanced
+                if revision_advanced and state.workflow_version == "event-v1"
                 else strip_state_projection(events)
             )
             event_ids = [event.event_id for event in persisted_events]
@@ -126,15 +146,13 @@ class SqlAlchemyRuntimeStore:
                 checkpoint.stage = state.flow.current_stage.value
                 checkpoint.completed = _checkpoint_is_closed(state)
                 checkpoint.state_json = persisted_state.model_dump_json()
-                from app.models.entities import now
-
                 checkpoint.updated_at = now()
                 self.db.add(checkpoint)
             self.db.commit()
         except Exception as exc:
             self.db.rollback()
             logger.warning("Agent runtime checkpoint unavailable: %s", exc)
-            if self.persistence_required:
+            if self.persistence_required or state.workflow_version == "workflow-v2":
                 raise RuntimePersistenceError("无法持久化 Agent Runtime 状态") from exc
 
     def load(self, request_id: str) -> BlackboardState | None:
@@ -145,6 +163,8 @@ class SqlAlchemyRuntimeStore:
                 .first()
             )
             checkpoint_state = BlackboardState.model_validate_json(checkpoint.state_json) if checkpoint else None
+            if checkpoint_state is not None and checkpoint_state.workflow_version == "workflow-v2":
+                return checkpoint_state
             events = self._load_events(request_id)
             try:
                 projection = RuntimeEventProjector().rebuild(events)
@@ -159,7 +179,10 @@ class SqlAlchemyRuntimeStore:
         except Exception as exc:
             self.db.rollback()
             logger.warning("Agent runtime checkpoint load unavailable: %s", exc)
-            return None
+            # A failed read cannot tell us whether a durable v2 request exists.
+            # Treating it as absent could rerun a completed request even when
+            # optional legacy writes are configured.
+            raise RuntimePersistenceError("无法读取 checkpoint，禁止按新请求重新执行") from exc
 
     def load_events(self, request_id: str) -> list[RuntimeEvent]:
         try:

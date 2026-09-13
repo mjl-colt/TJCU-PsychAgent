@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import AsyncIterator
 
 from app.agents.blackboard import (
     AgentCommand,
@@ -32,6 +33,24 @@ class AgentDispatcher:
                 *(self._execute(command, state.model_copy(deep=True)) for command in commands)
             )
         )
+
+    async def iter_outcomes(
+        self, commands: tuple[AgentCommand, ...], state: BlackboardState,
+    ) -> AsyncIterator[AgentExecutionOutcome]:
+        """Deliver each result immediately; the caller serializes durable writes.
+
+        Closing/cancelling the iterator cancels and joins unfinished work, so a
+        failed checkpoint cannot leave detached agents running in the background.
+        """
+        tasks = [asyncio.create_task(self._execute(command, state.model_copy(deep=True))) for command in commands]
+        try:
+            for task in asyncio.as_completed(tasks):
+                yield await task
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _execute(self, command: AgentCommand, snapshot: BlackboardState) -> AgentExecutionOutcome:
         started = time.perf_counter()

@@ -4,7 +4,7 @@
 
 - 学生端 SSE 流式聊天，前端可展示打字机式输出。
 - Basic Auth 登录，支持学生和管理员角色隔离；密码使用带随机盐的 PBKDF2，并保留旧 SHA-256 登录后自动升级。
-- 事件驱动多 Agent 协作 runtime：Coordinator、Understanding、Safety、Context、Response 通过强类型共享黑板、事件命令和安全审查协作。
+- 显式多 Agent 工作流：四个业务 Agent + 确定性 Coordinator，通过步骤、任务收据、强类型 Blackboard 和安全审查协作；Event 只审计。
 - 动态路由 RAG：先判断 `CHAT / CONSULT / RISK`，普通问题不查知识库，咨询和风险场景才进入检索增强。
 - Chroma 向量 RAG 知识库：支持 Markdown、txt、PDF 文件上传，自动切块，默认使用本地 Ollama `qwen3-embedding:0.6b` 写入向量库；向量与 BM25 候选通过加权 RRF 融合，再进入本地 reranker 和相关度门，向量不可用时保留 BM25 兜底。
 - 可追溯 RAG：领域门拒绝无关 query，embedding 缓存绑定模型与正文 hash，证据使用 K 标签，最终输出拦截漏引和伪造引用。
@@ -17,7 +17,7 @@
 - RAG 评测：正样本 Recall@K、Precision@K、MRR、NDCG@K、HitRate，以及负样本拒绝率和检索决策准确率。
 - Prompt 注入防护：输入/历史/RAG 不可信隔离、编码与混淆检测、RAG 入库拒绝、最终输出门禁和工具最小权限。
 - 生产韧性：checkpoint/outcome 恢复、requestId 幂等、数据库租约、模型主备熔断、Redis 限流和 readiness 检查。
-- Runtime 基础能力：不可关闭的状态迁移门禁、可恢复上下文压缩、事件状态投影与 hash 校验。
+- Runtime 基础能力：状态迁移门禁、每个任务结果独立持久化、单一合并屏障、生成收尾恢复；事件投影与 hash 仅保留给历史 event-v1 恢复。
 - Runtime JSON 持久化在 MySQL 使用 `LONGTEXT`，启动时自动兼容升级旧 `TEXT` 列，避免完整状态投影触碰 64KB 上限。
 
 ## 前端演示
@@ -34,6 +34,7 @@
 ## 学习文档
 
 - [Runtime 整体流程例子梳理](docs/心理ai%20Runtime整体流程例子梳理.md)：逐步说明 checkpoint 何时保存、存在哪里、崩溃后怎样恢复。
+- [workflow-v2 详细流程与存储图](docs/心理ai%20workflow-v2详细流程与存储图.md)：直接查看完整 CONSULT 主路线成品图，以及内存、MySQL、Redis、Chroma 的数据去向。
 - [四 Agent 内部完整流程例子](docs/心理ai%20四Agent内部完整流程例子.md)：逐步说明每个 Agent 的 Prompt、记忆、RAG、Skill、fallback 和安全门。
 - [生产差距与十条优化路线](docs/心理ai生产差距与十条优化路线.md)：已完成项与仍需外部建设的边界。
 - [项目面试核心十问](docs/心理ai%20Runtime与四Agent面试问答.md)：把架构、状态、恢复、四 Agent、模型选型、向量库规模、混合 RAG、幻觉、短长期记忆、框架横向比较、重试、安全和生产化整合成十个大问题。
@@ -49,7 +50,7 @@ Web 框架：FastAPI
 短期记忆：Redis
 配置管理：pydantic-settings，.env
 AI 接入：Ollama，本地微调 GGUF 模型，OpenAI-compatible API，Mock Provider
-Agent 编排：事件驱动黑板协作 runtime
+Agent 编排：checkpoint_workflow（workflow-v2 显式工作流）
 RAG：本地知识库切块、Ollama/OpenAI Embeddings、Chroma 向量库、BM25、分数融合、本地 reranker、上下文扩展
 流式输出：Server-Sent Events
 文档解析：pypdf
@@ -60,7 +61,7 @@ Excel 台账：openpyxl
 工具协议：MCP
 ```
 
-说明：当前 Python 版只保留事件驱动多 Agent runtime，入口在 `app/agents/event_driven_runtime.py`。共享返回类型定义在 `app/agents/result.py`。RAG 默认使用 Chroma 本地持久化向量库做语义召回，同时用 BM25 做关键词召回，再融合并本地 rerank；未安装 Chroma、未配置 `OPENAI_API_KEY` 或向量服务异常时，会自动回退到本地 BM25 + `hybrid_score` reranker，避免演示环境中断。
+说明：新请求使用 `workflow-v2`，转换规则在 `app/agents/workflow.py`，执行器在 `app/agents/workflow_runtime.py`。服务入口 `AgentRuntimeService` 暂留于 `app/agents/event_driven_runtime.py` 以兼容既有导入；它按 checkpoint 的 workflow_version 选择新工作流或历史 event-v1 Runtime。共享返回类型定义在 `app/agents/result.py`。RAG 默认使用 Chroma 本地持久化向量库做语义召回，同时用 BM25 做关键词召回，再融合并本地 rerank；未安装 Chroma、未配置 `OPENAI_API_KEY` 或向量服务异常时，会自动回退到本地 BM25 + `hybrid_score` reranker，避免演示环境中断。
 
 项目对用户、页面、日志说明和文档统一称为“心理ai”。代码中少量 `mindbridge-*` 仅是既有数据库名、模型文件名、Redis key、MCP tool 和 Python 类的兼容标识；为避免破坏已部署数据、模型和外部调用协议，本轮不做无收益的物理迁移。
 
@@ -72,7 +73,7 @@ datasets/              # 可版本化的合成/评测数据集
 skills/                # 运行时加载的标准 Skill 定义
 
 app/
-├── agents/          # 事件驱动多 Agent runtime
+├── agents/          # 显式工作流 + 历史事件 Runtime 兼容恢复
 ├── api/             # FastAPI 路由
 ├── core/            # 配置、数据库、安全、启动初始化
 ├── knowledge/       # 内置校园心理知识库
@@ -97,41 +98,44 @@ scripts/
 └── package-release.sh
 ```
 
-## Agent loop
+## Agent 工作流
 
-每轮对话默认进入强类型、事件驱动的 Blackboard runtime。Coordinator 只根据事件更新 `flow` 并发布 Agent 命令；Dispatcher 负责限流、超时、重试和并行执行；Agent 返回局部状态，ResultApplier 校验权限与数据结构后原子合并：
+下一步由当前步骤、已保存任务收据和 Blackboard 业务结果共同决定；规则集中在 WorkflowCoordinator，不再读取 Event 类型调度。
 
 ```text
-TURN_STARTED
--> Coordinator 发布 Understanding + Safety 批次
--> Dispatcher 使用 asyncio.gather 并行执行
--> Runtime 校验并合并 understanding / safety
--> AGENT_COMPLETED 事件推动 Coordinator 路由
--> Context（按需）-> Response Prompt -> Safety Review
--> Prompt 版本匹配后进入 READY_FOR_GENERATION
--> GENERATION_STARTED -> 支持类回复先完整缓冲
--> 规则输出门；HIGH 再过结构化语义安全复审
--> 通过后 SSE 输出
--> GENERATION_COMPLETED -> TURN_COMPLETED
+RECEIVED
+→ ANALYZING：Understanding + Safety 并行
+→ 每个 outcome 返回即保存 checkpoint 收据
+→ 收齐后统一校验并合并（唯一一道完成屏障）
+→ 按 intent/risk 路由，必要时 RETRIEVING：Context
+→ PREPARING_RESPONSE：Response 组装 Prompt
+→ PROMPT_REVIEW：Safety 审查同版本
+   拒绝 → REVISING_RESPONSE → 再审；预算耗尽则 FAILED
+   通过 → READY_FOR_GENERATION（不再额外调用 FINALIZE_RESPONSE）
+→ GENERATING：最终模型 + 输出安全门
+→ FINALIZING_RESPONSE：保存合法完整文本
+→ 助手消息与工具任务派发确认
+→ COMPLETED
 ```
 
-各 Agent 分工：
+- WorkflowCoordinator：确定性步骤与转换规则，不是第五个 LLM Agent。
+- WorkflowRuntime：提交任务、保存结果收据、校验合并、推进和恢复。
+- Dispatcher：并行执行、超时、重试和降级。
+- Understanding / Safety / Context / Response：分别返回自己分区的局部更新。
 
-- `CoordinatorAgent`：消费完成事件、维护阶段和安全路由、发布下一批 Agent 命令。
-- `UnderstandingAgent`：判断 `CHAT / CONSULT / RISK`，只返回 `understanding` 更新。
-- `SafetyAgent`：独立评估风险，高风险结果直接进入安全路由，并审查同版本候选 Prompt。
-- `ContextAgent`：按需聚合 Redis / MySQL 记忆、RAG 检索结果和 Skill 约束。
-- `ResponseAgent`：根据 Blackboard 分区生成带版本的候选 Prompt，等待安全审查。
+Blackboard 更新采用创建新对象并替换局部 state 引用的方式；Agent 得到独立快照，不能修改共享状态。命令绑定的输入 revision 与后续收据提交的 checkpoint revision 分开处理。
 
-运行中状态按请求写入 `agent_runtime_checkpoints`，事件按 `event_id` 幂等写入 `agent_runtime_events`。同一状态推进产生的事件使用 `save_many()` 在一个事务批量提交；Agent 批次 outcome 会先与合并后的 checkpoint 一起落库，再交给 Coordinator。应用启动时扫描未完成 checkpoint：已有 outcome 直接重放，缺少 outcome 的命令沿用原 `command_id` 续跑。
+checkpoint 表 agent_runtime_checkpoints 保存当前阶段、业务状态和 execution.tasks。单个 Agent 返回先保存 outcome 收据；全部收齐后，业务合并与下一步任务在同一事务提交，成功后才调用下一步。恢复只看 checkpoint：有收据复用，没收据沿用原 commandId 重跑。
 
-Agent 不直接修改共享 Blackboard；同一批并行结果全部返回后才统一合并，因此不会产生并发写覆盖。`COMPLETED` 现在表示 SSE 最终文本已经生成并写回 checkpoint；Prompt 只完成编排时停在 `READY_FOR_GENERATION`。
+Event 追加写入 agent_runtime_events，与对应 checkpoint 同事务保存，用于审计和指标。v2 不经 EventBus、不产生调度用 AGENT_BATCH_REQUESTED、不复制整份 state_projection。旧 event-v1 请求继续使用旧队列和投影恢复，避免破坏历史 checkpoint。
+
+READY_FOR_GENERATION 只表示 Prompt 就绪；FINALIZING_RESPONSE 表示合法最终文本已保存但业务收尾尚未完成。收尾失败可以直接复用已检查文字；只有业务保存和工具任务派发确认后才提交 COMPLETED。工具任务最终执行成功与聊天请求完成是不同状态。
 
 生产 Prompt 不再散落在 Python 字符串中，统一位于 `app/prompts/*.md`。每份模板必须声明 `name` 和 `vN` 版本，加载时计算正文 SHA-256；严格占位符缺值、多值或遗留未替换都会直接报错。运行时的 `prompt_template_version` 记录实际模板组合，Prompt 正文携带 `PROMPT_ID` 与 `PROMPT_SHA256`，可以从一次 trace 反查当时使用了哪一版。
 
 Safety Review 也不再搜索“安全”“可信任”“不诊断”等固定中文。Response 先写入强类型 `ResponsePolicyContract`，例如 HIGH 会得到 `requires_immediate_safety_check=true`、`requires_human_support=true` 和 `requires_emergency_escalation=true`；候选 Prompt 携带该契约的 SHA-256，Safety 校验契约是否与当前 Blackboard 风险和 RAG 证据一致。最终 HIGH 回复无论普通支持输出门配置是否关闭，都必须在服务器内完整缓冲，再由独立 Safety 模型返回七个布尔字段，按语义检查情绪回应、当下安置、真人支持、紧急升级、诊断、用药和危险细节。审核模型异常或 JSON 不合 schema 时 fail closed，替换为系统内置高风险兜底文字，未审核内容不会先流给浏览器。
 
-仍然保留中文的地方有三类：给中文用户看的回复、版本化安全策略里的语言模式、测试/mock 的确定性样本。这些内容本来就与语言有关；已经删除的是用“代码、怎么写、焦虑”等词直接决定 CHAT/CONSULT 的生产捷径。现在 Understanding 依赖结构化分类结果，低置信或模型故障统一保守进入 CONSULT，高风险硬规则仍独立于模型。
+仍然保留中文的地方有三类：给中文用户看的回复、版本化安全策略里的语言模式、测试/mock 的确定性样本。这些内容本来就与语言有关；已经删除的是用“代码、怎么写、焦虑”等词直接决定 CHAT/CONSULT 的生产捷径。现在 Understanding 依赖结构化分类结果，分类结果非法或模型故障统一保守进入 CONSULT，高风险硬规则仍独立于模型。
 
 客户端可为每轮请求提供稳定 `requestId`。相同 requestId 只能绑定相同用户、会话和输入；重连时会恢复或重放结果。`agent_turn_materializations` 原子绑定用户消息、心理报告、trace、助手消息和工具派发状态，避免顺序重试重复落库。
 
@@ -153,11 +157,13 @@ pymysql
 redis
 ```
 
-Runtime 只有一套正式实现：`event_driven_blackboard`。不再暴露一个实际上不能切换实现的 `AGENT_FRAMEWORK` 假开关。
+新请求默认 `checkpoint_workflow / workflow-v2`。历史 checkpoint 缺少 workflow_version 时按 event-v1 恢复；版本由请求快照确定，不提供随意切换活跃请求执行语义的开关。
 
 Runtime 生产参数：
 
 ```env
+AGENT_WORKFLOW_MAX_STEPS=32
+# 以下两个参数只用于历史 event-v1 Runtime
 AGENT_RUNTIME_MAX_EVENTS=64
 AGENT_RUNTIME_IDLE_TIMEOUT_SECONDS=30
 AGENT_RUNTIME_MAX_CONCURRENCY=4
@@ -383,7 +389,7 @@ curl -u student:student123 http://127.0.0.1:8080/api/agent/status
 同时 `agentFramework.active` 会显示当前实际使用的 Agent 编排框架：
 
 ```text
-event_driven_blackboard
+checkpoint_workflow
 ```
 
 不要只用肉眼比较两段回复。项目提供 12 个固定场景的成对 A/B：基座和微调模型使用同一个 system prompt、输入、`temperature=0`、`seed=42` 和 token 上限；评分使用“概念组覆盖 + 禁止项”，不要求模型背出某一句中文答案，并同时记录分类通过率、边界通过率、P50/P95 延迟与逐题胜负。
@@ -484,7 +490,7 @@ target/rag-eval-report.json
 
 ## 单元测试
 
-当前有 84 个 Python 标准库 `unittest`，不依赖 `pytest`。覆盖强类型/权限、模型 JSON schema、并行屏障、事件批量事务、checkpoint 恢复、事件投影、旧 checkpoint 兼容、废弃置信度字段和数据库列迁移、固定状态迁移门禁、上下文压缩、outcome 重放、跨进程租约、Prompt 模板版本/hash/占位符、响应策略契约、HIGH 语义安全复审、RRF、RAG 负样本拒答、embedding 缓存版本、增量向量化、引用完整性、版本化安全策略、Skill 选择、模型 A/B 评分、注入防护、密码、限流、模型主备和最终生成生命周期：
+当前有 104 个 Python 标准库 `unittest`，不依赖 `pytest`。覆盖强类型/权限、模型 JSON schema、并行屏障、事件批量事务、checkpoint 恢复、历史事件投影、旧 checkpoint 兼容、v2 任务收据部分恢复、提交失败取消、租约丢失拒写、最终文本收尾恢复、废弃置信度字段和数据库列迁移、固定状态迁移门禁、上下文压缩、outcome 重放、跨进程租约、Prompt 模板版本/hash/占位符、响应策略契约、HIGH 语义安全复审、RRF、RAG 负样本拒答、embedding 缓存版本、增量向量化、引用完整性、版本化安全策略、Skill 选择、模型 A/B 评分、注入防护、密码、限流、模型主备和最终生成生命周期：
 
 ```bash
 python -m unittest discover -s tests
@@ -492,7 +498,7 @@ python -m unittest discover -s tests
 
 ## Agent Runtime Harness
 
-线上对话通过内部 Harness 类组织一次 Agent run；对用户展示的项目名称统一为“心理ai”。Harness 不改变事件驱动 runtime 内部的多 Agent 协作方式，而是在外层统一管理：
+线上对话通过内部 Harness 类组织一次 Agent run；对用户展示的项目名称统一为“心理ai”。Harness 不负责内部步骤转换，而是在外层统一管理：
 
 - 输入脱敏和 session 解析。
 - Agent runtime 调用和多 Agent 协作结果接入。
@@ -500,7 +506,7 @@ python -m unittest discover -s tests
 - 学生与助手消息持久化。
 - Agent steps、知识召回、风险结果等 trace 数据输出。
 
-因此 HTTP 层只负责认证和 SSE 流式输出，Agent 后处理逻辑集中在 runtime harness 内。
+HTTP 层负责认证和 SSE 接入；Harness 负责请求准备与业务物化，ChatService 配合 lifecycle 管理最终生成和收尾。并非 Runtime 之外所有代码都叫 Harness。
 
 ## Engineering Harness
 
@@ -516,6 +522,8 @@ python -m unittest discover -s tests
 
 ```bash
 python -m app.harness.runner
+# 隔离输出，保留历史报告；目录必须位于项目 target/ 下
+python -m app.harness.runner --suite all --output-dir target/harness-workflow-v2-20260912
 ```
 
 报告输出到：
@@ -524,6 +532,8 @@ python -m app.harness.runner
 target/harness/harness-report.json
 target/harness/rag-eval-report.json
 ```
+
+2026-09-12 上述独立输出目录中的六套 Harness 全部通过。此结果使用 SQLite、mock 和关闭向量的可重复环境，不代表真实 MySQL 并发锁语义、GPU 性能或模型正确率已完成验证。
 
 ## MCP 工具服务
 

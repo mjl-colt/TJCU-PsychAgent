@@ -84,6 +84,7 @@ class ChatService:
             SqlAlchemyRuntimeStore(
                 self.db,
                 persistence_required=getattr(self.settings, "agent_runtime_persistence_required", True),
+                lease=outcome.lease if getattr(self.settings, "agent_runtime_lease_enabled", True) else None,
             )
             if getattr(self.settings, "agent_runtime_persistence_enabled", True)
             else NullRuntimeStore()
@@ -93,10 +94,24 @@ class ChatService:
             store,
         )
         runtime_state = outcome.runtime_state
+        if runtime_state.flow.current_stage == FlowStage.FAILED:
+            yield sse("error", ChatStreamEvent(
+                type="error", sessionId=outcome.session_public_id, requestId=outcome.request_id,
+                message="本轮未通过工作流安全检查，未开始生成回复",
+            ).model_dump(by_alias=True))
+            return
         if outcome.replayed_response is not None:
             lifecycle_enabled = runtime_state.flow.current_stage == FlowStage.READY_FOR_GENERATION
             if lifecycle_enabled:
                 runtime_state = lifecycle.started(runtime_state)
+            # A checked output may be durable before its business writes finish.
+            self.agent_harness.save_assistant_message(
+                outcome.user_id, outcome.session_id, outcome.session_public_id,
+                outcome.replayed_response, outcome.request_id,
+            )
+            await self._dispatch_tools(outcome)
+            if lifecycle_enabled or runtime_state.flow.current_stage == FlowStage.FINALIZING_RESPONSE:
+                lifecycle.completed(runtime_state, outcome.replayed_response)
             yield sse(
                 "token",
                 ChatStreamEvent(
@@ -106,9 +121,6 @@ class ChatService:
                     content=outcome.replayed_response,
                 ).model_dump(),
             )
-            await self._dispatch_tools(outcome)
-            if lifecycle_enabled:
-                lifecycle.completed(runtime_state, outcome.replayed_response)
             yield sse(
                 "done",
                 ChatStreamEvent(
@@ -190,6 +202,8 @@ class ChatService:
                             semantic_review.issues,
                             semantic_review.prompt_id,
                         )
+            if lifecycle_enabled and runtime_state.workflow_version == "workflow-v2":
+                runtime_state = lifecycle.output_ready(runtime_state, final_response)
             self.agent_harness.save_assistant_message(
                 outcome.user_id,
                 outcome.session_id,
@@ -219,6 +233,7 @@ class ChatService:
                     )
         elif lifecycle_enabled:
             lifecycle.failed(runtime_state, "SSE 生成未返回任何内容")
+            raise RuntimeError("最终模型未返回任何内容")
         yield sse(
             "done",
             ChatStreamEvent(
@@ -242,6 +257,7 @@ class ChatService:
                 exc,
                 exc_info=True,
             )
+            raise
 
 
 def sse(event: str, data: dict) -> str:

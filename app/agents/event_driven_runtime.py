@@ -12,6 +12,7 @@ from app.agents.runtime_services import AgentRuntimeServices
 from app.agents.generation_lifecycle import GenerationLifecycle
 from app.services.prompt_security import PromptSecurityService
 from app.agents.runtime_store import NullRuntimeStore, SqlAlchemyRuntimeStore
+from app.agents.runtime_lease import RuntimeLease, RuntimeLeaseLostError, RuntimeLeaseManager
 from app.agents.state_agents import (
     StatefulContextAgent,
     StatefulResponseAgent,
@@ -19,6 +20,8 @@ from app.agents.state_agents import (
     StatefulUnderstandingAgent,
 )
 from app.agents.state_coordinator import BlackboardCoordinator
+from app.agents.workflow import WorkflowCoordinator
+from app.agents.workflow_runtime import WorkflowRuntime
 from app.core.config import Settings
 from app.core.enums import IntentType, RiskLevel
 from app.models.entities import ChatSession, UserAccount
@@ -30,12 +33,8 @@ from app.services.knowledge import SearchResult
 from app.services.memory import RedisShortTermMemoryStore
 
 
-class EventDrivenAgentRuntimeService:
-    """Typed, event-driven Blackboard runtime used by the application.
-
-    Production requests use explicit events, validated state updates, bounded
-    parallel dispatch and durable checkpoints instead of task claiming.
-    """
+class AgentRuntimeService:
+    """New requests use workflow-v2; old checkpoints retain event-v1 semantics."""
 
     def __init__(self, db: Session, settings: Settings):
         self.db = db
@@ -49,14 +48,15 @@ class EventDrivenAgentRuntimeService:
         session: ChatSession,
         model_input: str,
         request_id: str | None = None,
+        lease: RuntimeLease | None = None,
     ) -> AgentRunResult:
         """Synchronous compatibility entry point for CLI harnesses and tests."""
 
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            return asyncio.run(self.run_async(user, session, model_input, request_id))
-        raise RuntimeError("EventDrivenAgentRuntimeService.run() cannot run inside an event loop; await run_async()")
+            return asyncio.run(self.run_async(user, session, model_input, request_id, lease=lease))
+        raise RuntimeError("AgentRuntimeService.run() cannot run inside an event loop; await run_async()")
 
     async def run_async(
         self,
@@ -64,6 +64,7 @@ class EventDrivenAgentRuntimeService:
         session: ChatSession,
         model_input: str,
         request_id: str | None = None,
+        lease: RuntimeLease | None = None,
     ) -> AgentRunResult:
         services = AgentRuntimeServices(
             db=self.db,
@@ -83,6 +84,7 @@ class EventDrivenAgentRuntimeService:
             SqlAlchemyRuntimeStore(
                 self.db,
                 persistence_required=getattr(self.settings, "agent_runtime_persistence_required", True),
+                lease=lease if getattr(self.settings, "agent_runtime_lease_enabled", True) else None,
             )
             if getattr(self.settings, "agent_runtime_persistence_enabled", True)
             else NullRuntimeStore()
@@ -107,21 +109,41 @@ class EventDrivenAgentRuntimeService:
                 session_id=session.public_id,
                 request_id=request_id,
                 prompt_injection_signals=security.signals,
+                workflow_version="workflow-v2",
             )
-        runtime = BlackboardEventRuntime(
-            coordinator=BlackboardCoordinator(self.settings),
+        runtime_class = WorkflowRuntime if state.workflow_version == "workflow-v2" else BlackboardEventRuntime
+        coordinator_class = WorkflowCoordinator if state.workflow_version == "workflow-v2" else BlackboardCoordinator
+        runtime = runtime_class(
+            coordinator=coordinator_class(self.settings),
             dispatcher=AgentDispatcher(agents, self.settings),
             settings=self.settings,
             store=store,
         )
-        execution = await runtime.run(state, resume=resume)
+        execution = await self._execute_with_lease(runtime, state, resume, lease)
         return self._to_result(execution, user)
+
+    async def _execute_with_lease(self, runtime, state, resume, lease):
+        if lease is None:
+            return await runtime.run(state, resume=resume)
+        task = asyncio.create_task(runtime.run(state, resume=resume))
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=max(1.0, lease.ttl_seconds / 3))
+                if done:
+                    return task.result()
+                if not RuntimeLeaseManager(self.db, self.settings).renew(lease):
+                    raise RuntimeLeaseLostError("Agent 执行期间租约丢失")
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     async def resume_state_async(
         self,
         user: UserAccount,
         session: ChatSession,
         state: BlackboardState,
+        lease: RuntimeLease | None = None,
     ) -> AgentRunResult:
         """Resume a state loaded by the startup recovery scanner."""
 
@@ -130,6 +152,7 @@ class EventDrivenAgentRuntimeService:
             session,
             state.request.model_input,
             request_id=state.request.request_id,
+            lease=lease,
         )
 
     @staticmethod
@@ -153,6 +176,7 @@ class EventDrivenAgentRuntimeService:
             state.flow.current_stage in {
                 FlowStage.READY_FOR_GENERATION,
                 FlowStage.GENERATING,
+                FlowStage.FINALIZING_RESPONSE,
                 FlowStage.COMPLETED,
             }
             and state.response
@@ -198,3 +222,7 @@ class EventDrivenAgentRuntimeService:
             PromptTemplates.answer_system_prompt(intent, risk, "", display_name),
             AiMessage(role="user", content=model_input),
         ]
+
+
+# Historical imports remain valid; engine selection is always checkpoint-versioned.
+EventDrivenAgentRuntimeService = AgentRuntimeService

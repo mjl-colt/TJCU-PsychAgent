@@ -1,5 +1,7 @@
 # 心理ai RAG、Skill 与模型效果量化说明
 
+> 2026-09-12 工作流更新：Context 的 RAG/Skill 逻辑保持不变，调用方改为显式 workflow-v2；Event 只审计。此次 104 项单元测试及六套 SQLite + mock Harness 通过，固定 68 条 RAG 指标保持不变，报告见 target/harness-workflow-v2-20260912/harness-report.json。下文历史模型/向量指标不代表此次重跑了真实模型 A/B。
+
 这份文档只用一个问题，把知识库放在哪里、怎么分块、如何召回、Skill 为什么存在、危险规则如何判断，以及微调模型怎么测清楚。
 
 示例学生输入：
@@ -252,7 +254,7 @@ campus_support_toolkit
 
 评测集是人工编写的固定输入和相关来源标签，可以叫“合成/离线样本”；指标不是手填的。`python -m app.harness.runner --suite rag` 会真的创建隔离数据库、同步知识、执行分块、领域门、BM25、RRF、rerank、阈值和 Top 4，再从结果计算指标。
 
-当前结果：
+历史 RAG 改造对比（“当前”列指该次 RAG 改造后，不是此次工作流改造的增量）：
 
 | 指标 | 改造前 | 当前 | 变化 |
 | --- | ---: | ---: | ---: |
@@ -268,7 +270,7 @@ campus_support_toolkit
 | 标准 Skill 文件 | 10 | 4 | 合并减少 60%，九条路径仍全部覆盖 |
 | unittest | 62 | 84 | +35.48% |
 
-调度层本次也重新跑了 10 轮确定性异步 I/O：串行 p50 222.54ms，并行 p50 125.87ms，阶段延迟降低 43.44%，加速 1.77 倍。它只证明 Python 编排确实并行，不代表单 GPU 上两个模型请求也能获得同等加速。
+上述历史基准包含 10 轮确定性异步 I/O：串行 p50 222.54ms，并行 p50 125.87ms，阶段延迟降低 43.44%，加速 1.77 倍。它只证明 Python 编排确实并行，不代表单 GPU 上两个模型请求也能获得同等加速。2026-09-12 的 workflow-v2 回归为 104 项单元测试通过、六套 Harness 通过；RAG 指标保持不变，没有重测真实模型并行收益。
 
 改造前后正样本仍是相同的 60 条，但本次同时改变了切块、融合、阈值和知识内容，因此这是“系统版本总体提升”，不能把全部增量归功于某一个算法。Engineering Harness 为了结果可重复仍主动关闭向量，所以表中指标是 BM25 fallback，不是 embedding A/B；本机已经另外使用 `qwen3-embedding:0.6b` 建成 79 条、每条 1024 维的真实 Chroma 索引并完成查询验证。
 
@@ -344,7 +346,7 @@ self.assertEqual(completed.state.response.final_response, "先从今晚固定起
 
 现在四层分别负责不同工作：
 
-1. Understanding 使用带 schema 的模型分类；高风险硬规则先行，但普通 CHAT/CONSULT 不再由中文关键词抢跑。低置信或模型故障保守进入 CONSULT。
+1. Understanding 使用带 schema 的模型分类；高风险硬规则先行，但普通 CHAT/CONSULT 不再由中文关键词抢跑。分类结果非法或模型故障保守进入 CONSULT。
 2. Response 把非诊断、眼前安置、真人支持、紧急升级、RAG 引用写成 `ResponsePolicyContract` 布尔字段，并在 Prompt 中携带契约 hash。
 3. Prompt Safety Review 校验“契约是否与 Blackboard 当前风险和证据一致”，不搜索某句中文。
 4. 最终 HIGH 回复由独立模型做严格 JSON 语义复审；规则层继续负责擅长的确定性禁止项和 K 引用合法性。

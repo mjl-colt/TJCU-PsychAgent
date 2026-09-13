@@ -29,17 +29,22 @@ def validate_runtime_transition(previous: BlackboardState, current: BlackboardSt
 
     if previous.request != current.request:
         raise RuntimeInvariantError("Runtime 状态迁移不能修改请求身份或输入")
+    if previous.workflow_version != current.workflow_version:
+        raise RuntimeInvariantError("执行过程中不能切换 workflow_version")
     if current.revision < previous.revision:
         raise RuntimeInvariantError("Runtime revision 不能倒退")
     if current.flow.current_stage in {
         FlowStage.READY_FOR_GENERATION,
         FlowStage.GENERATING,
+        FlowStage.FINALIZING_RESPONSE,
         FlowStage.COMPLETED,
     }:
         review = current.safety.prompt_review if current.safety else None
         response = current.response
         if not response or not review or not review.approved or review.prompt_version != response.prompt_version:
             raise RuntimeInvariantError("生成阶段必须绑定已批准的同版本 Prompt")
+        if current.flow.current_stage == FlowStage.FINALIZING_RESPONSE and not response.final_response:
+            raise RuntimeInvariantError("业务收尾阶段必须已有最终回答")
 
 
 def annotate_runtime_events(

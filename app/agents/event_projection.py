@@ -26,7 +26,9 @@ def state_projection_payload(state: BlackboardState) -> dict:
 
 def state_projection_hash(payload: dict) -> str:
     state = BlackboardState.model_validate(payload)
-    return hashlib.sha256(state.model_dump_json().encode("utf-8")).hexdigest()
+    # Preserve hashes of pre-v2 snapshots which did not serialize these fields.
+    absent = {key for key in ("workflow_version", "execution") if key not in payload}
+    return hashlib.sha256(state.model_dump_json(exclude=absent).encode("utf-8")).hexdigest()
 
 
 def attach_state_projection(state: BlackboardState, events: Iterable[RuntimeEvent]) -> tuple[RuntimeEvent, ...]:
