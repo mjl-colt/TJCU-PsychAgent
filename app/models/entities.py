@@ -161,6 +161,28 @@ class ToolJob(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
+class ToolOutbox(Base):
+    """Durable bridge from the business transaction to the Redis Stream.
+
+    A ToolJob is the authoritative business record.  The outbox only tracks
+    delivery of that job id to the broker and deliberately tolerates duplicate
+    publishes: consumers claim the ToolJob atomically before executing it.
+    """
+
+    __tablename__ = "tool_outbox"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="PENDING", index=True)
+    stream_message_id: Mapped[str] = mapped_column(String(128), default="")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    available_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
+    published_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
 class DeadLetterRecord(Base):
     __tablename__ = "dead_letter_records"
 

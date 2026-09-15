@@ -1,6 +1,6 @@
 # 心理ai workflow-v2 详细流程与存储图
 
-> 更新于 2026-09-12。本文只描述一条正常的 CONSULT 咨询路线，重点说明每一步由谁执行、产生什么数据，以及数据保存在内存、MySQL、Redis 还是 Chroma。
+> 更新于 2026-09-14。本文只描述一条正常的 CONSULT 咨询路线，重点说明每一步由谁执行、产生什么数据，以及数据保存在内存、MySQL、Redis 还是 Chroma。
 
 ## 一、先记住五个存储结论
 
@@ -29,9 +29,9 @@ Event 不决定下一步，也不进入请求内存队列。它是追加式审�
 
 > 我最近考试压力很大，连续几晚睡不好，今晚可以先做什么？
 
-![workflow-v2 完整执行与存储流程](assets/workflow-v2-detailed-flow.png)
+![workflow-v2 完整执行与存储流程](assets/心理ai-workflow-v2-详细流程图.svg)
 
-> 点击图片可在 Markdown 阅读器中查看原始尺寸；SVG 矢量版位于同目录的“心理ai-workflow-v2-详细流程图.svg”。
+> 该图是矢量图，可直接放大查看 Runtime、Outbox、Redis Stream、Worker 与 MCP 的完整链路。
 
 <details>
 <summary>Mermaid 源码（需要修改图时再展开）</summary>
@@ -52,8 +52,10 @@ sequenceDiagram
     participant CTX as ContextAgent
     participant R as ResponseAgent
     participant LLM as 最终生成模型
+    participant MCP as MCP Client / Server
     participant Redis as Redis
     participant Chroma as Chroma
+    participant Worker as 独立 Tool Worker
 
     User->>API: POST message + requestId
     API->>H: prepare_chat()
@@ -200,14 +202,17 @@ sequenceDiagram
     API->>DB: checkpoint 保存 final_response<br/>stage=FINALIZING_RESPONSE
     API->>DB: 追加 GENERATION_OUTPUT_READY
 
-    API->>DB: 保存助手正式消息
-    API->>Redis: 写入近期对话记忆
-    API->>DB: 写入需要的 tool_jobs<br/>更新业务物化收据
+    H->>DB: 保存助手正式消息 + tool_jobs + tool_outbox<br/>更新业务物化收据（同一事务）
+    H->>Redis: 写入近期对话记忆
+    Worker->>DB: 领取 PENDING outbox
+    Worker->>Redis: XADD tool-job Stream
+    Worker->>Redis: XREADGROUP / XAUTOCLAIM
+    Worker->>MCP: MCP Client 调用对应工具
 
     API->>DB: checkpoint 更新为 COMPLETED
     API->>DB: 追加 GENERATION_COMPLETED、TURN_COMPLETED
 
-    API-->>User: SSE token
+API-->>User: SSE token
     API-->>User: SSE done
 ~~~
 
@@ -456,7 +461,9 @@ response:
 ~~~text
 MySQL chat_messages         助手正式消息
 Redis                       近期会话记忆
-MySQL tool_jobs             需要执行的后台工具任务
+MySQL tool_jobs             工具业务状态、重试、依赖、死信依据
+MySQL tool_outbox           事务提交后的可靠发布记录
+Redis Stream                工具任务传输（至少一次）
 MySQL materializations      业务落地状态
 ~~~
 
@@ -485,7 +492,7 @@ flow:
 | 近期聊天记忆 | Agent 使用时读取到内存 | Redis | 按 Session 保存并过期 |
 | RAG 原始知识 | Context 使用时读取到内存 | MySQL knowledge_chunks | 权威知识副本 |
 | RAG 向量 | Context 查询时使用 | Chroma | 派生向量索引 |
-| 工具任务 | 创建时短暂存在内存 | MySQL tool_jobs | 持久任务队列 |
+| 工具任务 | 创建时短暂存在内存 | MySQL tool_jobs + tool_outbox；Redis Stream 传输 | DB 状态权威，Stream 至少一次 |
 | 请求执行权 | Harness 持有租约对象 | MySQL agent_runtime_leases | owner + 过期时间 |
 
 ## 十、内存和数据库的整体关系

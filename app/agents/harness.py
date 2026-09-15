@@ -23,7 +23,6 @@ from app.models.entities import (
 from app.schemas.dtos import AiMessage, ChatRequest
 from app.services.assessment import PsychologyAssessment
 from app.services.knowledge import SearchResult
-from app.services.mcp_client import MindBridgeMcpToolClient
 from app.services.memory import RedisShortTermMemoryStore
 from app.services.privacy import PrivacySanitizer
 from app.services.tool_queue import ToolQueueService
@@ -290,6 +289,7 @@ class MindBridgeAgentHarness:
         session_public_id: str,
         content: str,
         request_id: str,
+        tool_plan: AgentToolPlan | None = None,
     ) -> None:
         materialized = (
             self.db.query(AgentTurnMaterialization)
@@ -297,28 +297,45 @@ class MindBridgeAgentHarness:
             .first()
         )
         if materialized is None:
+            if tool_plan and tool_plan.requires_tools:
+                # A tool-producing turn must never fall back to two separate
+                # commits: without the receipt, a crash could save the reply
+                # while losing its tool jobs (or create duplicates on retry).
+                raise RuntimeError("工具任务落库失败：缺少 AgentTurnMaterialization 事务收据")
             self.save_message_by_id(user_id, session_id, session_public_id, MessageRole.ASSISTANT, content)
             return
-        if materialized.assistant_message_id is not None:
-            return
-        message = ChatMessage(
-            user_id=user_id,
-            session_id=session_id,
-            role=MessageRole.ASSISTANT.value,
-            content=content,
-        )
-        self.db.add(message)
-        self.db.flush()
-        materialized.assistant_message_id = message.id
-        materialized.final_response = content
-        materialized.updated_at = now()
+        wrote_message = materialized.assistant_message_id is None
+        if wrote_message:
+            message = ChatMessage(
+                user_id=user_id,
+                session_id=session_id,
+                role=MessageRole.ASSISTANT.value,
+                content=content,
+            )
+            self.db.add(message)
+            self.db.flush()
+            materialized.assistant_message_id = message.id
+            materialized.final_response = content
+            materialized.updated_at = now()
+        if tool_plan and tool_plan.requires_tools and not materialized.tools_dispatched:
+            # One transaction persists the final reply, the durable ToolJobs,
+            # their outbox records, and this idempotency receipt. Redis publish
+            # happens asynchronously from the outbox after the commit.
+            ToolQueueService(self.db, self.settings).enqueue_report(
+                tool_plan.report_id,
+                tool_plan.risk_level,
+                commit=False,
+            )
+            materialized.tools_dispatched = True
+            materialized.updated_at = now()
         session = self.db.get(ChatSession, session_id)
         if session is not None:
             session.touch()
             self.db.add(session)
         self.db.add(materialized)
         self.db.commit()
-        self.memory.append(session_public_id, MessageRole.ASSISTANT.value, content)
+        if wrote_message:
+            self.memory.append(session_public_id, MessageRole.ASSISTANT.value, content)
 
     def save_message_by_id(
         self,
@@ -335,27 +352,6 @@ class MindBridgeAgentHarness:
             self.db.add(session)
         self.db.commit()
         self.memory.append(session_public_id, role.value, content)
-
-    def mark_tools_dispatched(self, request_id: str) -> None:
-        materialized = (
-            self.db.query(AgentTurnMaterialization)
-            .filter(AgentTurnMaterialization.request_id == request_id)
-            .first()
-        )
-        if materialized is None or materialized.tools_dispatched:
-            return
-        materialized.tools_dispatched = True
-        materialized.updated_at = now()
-        self.db.add(materialized)
-        self.db.commit()
-
-    async def dispatch_tools(self, tool_plan: AgentToolPlan) -> list[str]:
-        if tool_plan.report_id is None:
-            return []
-        if self.settings.tool_queue_enabled:
-            ToolQueueService(self.db, self.settings).enqueue_report(tool_plan.report_id, tool_plan.risk_level)
-            return ["queued"]
-        return await MindBridgeMcpToolClient(self.settings).handle_report(tool_plan.report_id, tool_plan.risk_level)
 
     def save_message(self, user: UserAccount, session: ChatSession, role: MessageRole, content: str) -> None:
         self.db.add(ChatMessage(user_id=user.id, session_id=session.id, role=role.value, content=content))

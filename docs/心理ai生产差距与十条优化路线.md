@@ -193,7 +193,9 @@ Retrieval Decision Accuracy 100.00%
 - Agent 不能执行 shell 或任意 SQL；
 - 工具调用来自代码生成的 `AgentToolPlan`，不是模型自由输出；
 - 高风险报告进入有依赖关系的 ToolJob：Excel、个案、告警；
+- 最终回复、ToolJob 与事务 Outbox 同库提交，独立 Worker 通过 Redis Stream Consumer Group 至少一次消费，再经 MCP allowlist 调用工具；
 - 工具有业务幂等、重试、退避、限流、审计和死信；
+- Redis/Worker 重启由 AOF、Outbox 重投、`XAUTOCLAIM` 和 RUNNING 任务恢复覆盖；
 - 告警任务只有个案创建成功后才能执行；
 - 学生账号不能访问管理员报告和知识管理接口。
 

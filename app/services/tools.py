@@ -3,7 +3,6 @@ from __future__ import annotations
 import smtplib
 import ssl
 import threading
-from datetime import datetime
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -12,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.core.enums import RiskCaseStatus, ToolStatus
-from app.models.entities import AlertRecord, CaseNote, ExcelRecord, PsychologicalReport, RiskCase, UserAccount
+from app.models.entities import AlertRecord, CaseNote, ExcelRecord, PsychologicalReport, RiskCase, UserAccount, now
 from app.services.skills import MindBridgeSkillLibrary
 
 
@@ -82,7 +81,7 @@ class ToolOrchestrationService:
         record = self.notify(report, case)
         if record.status == ToolStatus.SUCCESS.value and case.status == RiskCaseStatus.OPEN.value:
             case.status = RiskCaseStatus.ALERT_SENT.value
-        case.updated_at = datetime.utcnow()
+        case.updated_at = now()
         self.db.add(case)
         self.db.commit()
         return record
@@ -94,8 +93,8 @@ class ToolOrchestrationService:
         actor_name = actor.strip() or "unknown"
         case.status = RiskCaseStatus.ACKNOWLEDGED.value
         case.acknowledged_by = actor_name
-        case.acknowledged_at = datetime.utcnow()
-        case.updated_at = datetime.utcnow()
+        case.acknowledged_at = now()
+        case.updated_at = now()
         self.db.add(case)
         self._add_case_note(case.id, actor_name, note.strip() or "已确认接手该个案")
         self.db.commit()
@@ -105,7 +104,7 @@ class ToolOrchestrationService:
         case = self.db.get(RiskCase, case_id)
         if case is None:
             raise RuntimeError(f"case {case_id} not found")
-        case.updated_at = datetime.utcnow()
+        case.updated_at = now()
         self.db.add(case)
         record = self._add_case_note(case.id, actor.strip() or "unknown", note.strip())
         self.db.commit()

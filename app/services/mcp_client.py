@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import sys
@@ -7,7 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
 from app.core.config import Settings
-from app.core.enums import RiskLevel
+from app.core.enums import RiskLevel, ToolJobKind
 
 
 class McpToolError(RuntimeError):
@@ -39,6 +40,32 @@ class MindBridgeMcpToolClient:
         except Exception as exc:
             raise McpToolError(f"MCP 工具调用异常：{type(exc).__name__}: {exc}") from exc
 
+    async def execute_job(self, kind: str, report_id: int, *, case_id: int | None = None) -> str:
+        """Execute one durable job through the MCP boundary.
+
+        Queue consumers use one MCP call per ToolJob so acknowledgements and
+        retry state remain aligned with the individual business side effect.
+        """
+        mapping = {
+            ToolJobKind.EXCEL_REPORT.value: ("mindbridge_excel_report", {"report_id": report_id}),
+            ToolJobKind.CASE_CREATE.value: ("mindbridge_case_create", {"report_id": report_id}),
+            ToolJobKind.RISK_ALERT.value: ("mindbridge_alert_notify", {"report_id": report_id}),
+        }
+        if kind == ToolJobKind.ALERT_SEND.value:
+            if case_id is None:
+                raise McpToolError("ALERT_SEND 缺少已创建的 caseId")
+            mapping[kind] = ("mindbridge_alert_send", {"case_id": case_id})
+        tool = mapping.get(kind)
+        if tool is None:
+            raise McpToolError(f"未知 MCP 工具任务：{kind}")
+        try:
+            async with self._session() as session:
+                return await self._call_tool(session, *tool)
+        except McpToolError:
+            raise
+        except Exception as exc:
+            raise McpToolError(f"MCP 工具调用异常：{type(exc).__name__}: {exc}") from exc
+
     @asynccontextmanager
     async def _session(self) -> AsyncIterator[Any]:
         try:
@@ -64,9 +91,15 @@ class MindBridgeMcpToolClient:
                 yield session
 
     async def _call_tool(self, session: Any, name: str, arguments: dict[str, Any]) -> str:
-        result = await session.call_tool(name, arguments=arguments)
+        timeout = max(1.0, float(getattr(self.settings, "tool_queue_mcp_timeout_seconds", 30.0)))
+        result = await asyncio.wait_for(session.call_tool(name, arguments=arguments), timeout=timeout)
         message = self._result_message(result)
         if getattr(result, "isError", False):
+            raise McpToolError(f"{name} 调用失败：{message}")
+        # Some built-in tools return domain failures as plain text rather than
+        # setting the MCP error bit. Normalize those into retryable failures.
+        normalized = message.strip().lower()
+        if normalized.startswith("failed:") or " not found" in normalized:
             raise McpToolError(f"{name} 调用失败：{message}")
         return message
 

@@ -298,22 +298,33 @@ curl -u admin:admin123 -X POST http://127.0.0.1:8080/api/admin/knowledge/backup
 
 ## 工具队列、限流与死信
 
-心理报告生成后，工具链不会阻塞学生端流式回复，而是写入 `tool_jobs` 队列表：
+心理报告生成后，工具链不会阻塞学生端流式回复。最终助手消息、`tool_jobs` 和 `tool_outbox` 在同一 MySQL 事务中提交；独立 Worker 再把 outbox 发布到 Redis Stream：
 
 ```text
-EXCEL_REPORT
-CASE_CREATE -> ALERT_SEND
+MySQL tool_jobs/tool_outbox
+        ↓
+Redis Stream（mindbridge:tool-jobs）
+        ↓
+独立 Tool Worker（Consumer Group）
+        ↓
+MCP Client → MCP Server → 工具实现
 ```
 
-Excel 写入使用进程内锁串行化，个案创建保持幂等；预警发送使用独立线程池并支持每分钟限流。失败任务会按延迟重试，超过 `TOOL_QUEUE_MAX_ATTEMPTS` 后进入 `dead_letter_records`。
+Redis Stream 采用至少一次投递；Worker 先用 MySQL 条件更新原子认领 `PENDING` 任务，再调用 MCP，正常的重复投递会被任务状态去重。Outbox 发布租约、Stream Consumer Group、`XAUTOCLAIM`、执行超时恢复、任务依赖、延迟重试和死信共同覆盖 Redis/Worker 重启。数据库工具按 `reportId` 幂等；SMTP 本身不支持事务幂等，极端情况下（邮件已发送但成功状态尚未落库时进程崩溃）可能重复发送，生产接入应使用带幂等键的消息/邮件网关。失败任务超过 `TOOL_QUEUE_MAX_ATTEMPTS` 后进入 `dead_letter_records`。
 
 ```env
 TOOL_QUEUE_ENABLED=true
-TOOL_QUEUE_EXCEL_WORKERS=1
-TOOL_QUEUE_EMAIL_WORKERS=2
+TOOL_QUEUE_WORKER_ENABLED=false       # Web 进程不执行后台工具
+TOOL_QUEUE_BACKEND=redis_stream
+TOOL_QUEUE_STREAM=mindbridge:tool-jobs
+TOOL_QUEUE_STREAM_MAXLEN=100000
+TOOL_QUEUE_CONSUMER_GROUP=mindbridge-tool-workers
+TOOL_QUEUE_MCP_ENABLED=true
 ALERT_EMAIL_RATE_LIMIT_PER_MINUTE=30
 ALERT_EMAIL_DELIVERY_MODE=log
 ```
+
+Docker Compose 中的 `tool-worker` 是独立 Worker 服务；Web 服务只写事务 Outbox，不轮询或执行工具。Consumer Group 支持横向扩容，但当前单文件 Excel 台账只适合单 Worker；多 Worker 部署时应把台账替换为数据库或具备并发控制的外部存储。
 
 `ALERT_EMAIL_DELIVERY_MODE=log` 适合本地演示；生产发邮件时改为 `smtp` 并配置 SMTP。
 
@@ -543,7 +554,7 @@ MCP Python 包建议使用 Python 3.10 或 3.11 安装运行。
 python -m app.mcp_tools.server
 ```
 
-业务后端触发报告后处理时，默认通过异步工具队列复用同一套工具实现；关闭队列后会作为 MCP client 通过 stdio 启动同一个 MCP server。
+业务后端触发报告后处理时，只走 MySQL 事务 Outbox + Redis Stream 异步投递，再由独立 Worker 作为 MCP client 通过 stdio 启动同一个 MCP server。`TOOL_QUEUE_ENABLED=false` 仅暂停 Worker 消费，已提交的任务仍保留在 MySQL，恢复后会继续发布和执行。
 
 暴露工具：
 

@@ -107,9 +107,8 @@ class ChatService:
             # A checked output may be durable before its business writes finish.
             self.agent_harness.save_assistant_message(
                 outcome.user_id, outcome.session_id, outcome.session_public_id,
-                outcome.replayed_response, outcome.request_id,
+                outcome.replayed_response, outcome.request_id, tool_plan=outcome.tool_plan,
             )
-            await self._dispatch_tools(outcome)
             if lifecycle_enabled or runtime_state.flow.current_stage == FlowStage.FINALIZING_RESPONSE:
                 lifecycle.completed(runtime_state, outcome.replayed_response)
             yield sse(
@@ -210,8 +209,8 @@ class ChatService:
                 outcome.session_public_id,
                 final_response,
                 outcome.request_id,
+                tool_plan=outcome.tool_plan,
             )
-            await self._dispatch_tools(outcome)
             if lifecycle_enabled:
                 runtime_state = lifecycle.completed(
                     runtime_state,
@@ -242,23 +241,6 @@ class ChatService:
                 requestId=outcome.request_id,
             ).model_dump(),
         )
-
-    async def _dispatch_tools(self, outcome) -> None:
-        self.agent_harness.renew_lease(outcome.lease)
-        try:
-            await self.agent_harness.dispatch_tools(outcome.tool_plan)
-            if outcome.tool_plan.requires_tools:
-                self.agent_harness.mark_tools_dispatched(outcome.request_id)
-        except Exception as exc:
-            logger.warning(
-                "Post-response tool dispatch failed for session=%s report_id=%s: %s",
-                outcome.session_public_id,
-                outcome.report_id,
-                exc,
-                exc_info=True,
-            )
-            raise
-
 
 def sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"

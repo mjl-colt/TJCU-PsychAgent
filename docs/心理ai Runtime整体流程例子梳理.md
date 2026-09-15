@@ -216,7 +216,7 @@ ChatService 通过 GenerationLifecycle.started() 保存 GENERATING，然后生�
 | 用户与助手正式消息 | MySQL chat_messages | 通过业务收据防重复 |
 | 心理报告、Trace | psychological_reports、agent_run_traces | 按业务流程保存 |
 | 消息、报告、回复与工具投递关联 | agent_turn_materializations | requestId 唯一 |
-| 工具任务 | tool_jobs | 持久队列及业务幂等 |
+| 工具任务 | tool_jobs + tool_outbox + Redis Stream | MySQL 状态权威、Outbox 防丢、Stream 至少一次投递 |
 | 近期会话 | Redis | 按 Session 保存，不承担工作流恢复 |
 | RAG 权威知识、向量索引 | MySQL knowledge_chunks、Chroma | Context 通过服务读取 |
 

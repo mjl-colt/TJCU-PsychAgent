@@ -17,7 +17,7 @@
 
 ## 先背这一分钟项目介绍
 
-> 心理ai是四个业务 Agent 加一个确定性 Coordinator 的心理支持工作流。新请求使用 workflow-v2：先并行理解和安全评估，每个任务结果先保存为 checkpoint 收据；收齐后统一校验合并 Blackboard，再按显式转换规则选择 CHAT、CONSULT 或 RISK。需要时由 Context 整理历史、RAG 和 Skill，Response 组装带版本的 Prompt，Safety 审核同一版本，通过后才生成。Event 只记录执行事实，不再承担调度。最终文本通过输出安全门后先保存待收尾 checkpoint，再落业务消息和工具任务，支持中断恢复与幂等。当前 104 项单元测试和六套 mock 工程 Harness 通过，但不代表真实模型正确率或生产压测完成。
+> 心理ai是四个业务 Agent 加一个确定性 Coordinator 的心理支持工作流。新请求使用 workflow-v2：先并行理解和安全评估，每个任务结果先保存为 checkpoint 收据；收齐后统一校验合并 Blackboard，再按显式转换规则选择 CHAT、CONSULT 或 RISK。需要时由 Context 整理历史、RAG 和 Skill，Response 组装带版本的 Prompt，Safety 审核同一版本，通过后才生成。Event 只记录执行事实，不再承担调度。最终文本通过输出安全门后先保存待收尾 checkpoint，再落业务消息和工具任务，支持中断恢复与幂等。当前 115 项单元测试和六套 mock 工程 Harness 通过，但不代表真实模型正确率或生产压测完成。
 
 Coordinator 不调用 LLM，因此这里是“四个业务 Agent + 一个协调器”，不要说成五个 LLM Agent。
 
@@ -177,9 +177,9 @@ Agent 只能读取隔离的快照并返回自己分区的 AgentStateUpdate。Dis
 | agent_runtime_events | 追加审计事实；v2 不携带整份 state_projection，也不靠它调度或重建 |
 | agent_runtime_leases | requestId 执行所有者和有效期 |
 | agent_turn_materializations | 用户消息、报告、最终回复、工具派发的业务落地收据 |
-| tool_jobs / dead_letter_records | 后台工具执行与失败补偿 |
+| tool_jobs / tool_outbox / dead_letter_records | 工具状态、事务可靠发布与失败补偿；Redis Stream 只负责传输 |
 
-生产配置使用 MySQL；此次自动回归使用隔离 SQLite。Redis 仍是短期会话记忆，不是 v2 流程队列。显式关闭持久化的 Null store 不具备跨进程恢复保证。
+生产配置使用 MySQL；此次自动回归使用隔离 SQLite。Redis 同时承担短期会话记忆和工具任务 Redis Stream 传输，工具任务的权威状态仍在 MySQL `tool_jobs`，事务 Outbox 负责防止数据库提交与消息发布之间丢任务。显式关闭持久化的 Null store 不具备跨进程恢复保证。
 
 ### checkpoint 保存时间点
 
@@ -637,10 +637,11 @@ Context 整体失败 → Dispatcher 重试，再退最小 Context
 
 ### Tool 重试
 
-工具使用持久化 `tool_jobs`，不在 SSE 主链路里死循环：
+工具使用 MySQL `tool_jobs` + `tool_outbox`，由独立 Worker 通过 Redis Stream 异步消费，不在 SSE 主链路里执行：
 
 ```text
-PENDING → RUNNING → SUCCESS
+tool_jobs: PENDING → RUNNING → SUCCESS / DEAD
+tool_outbox: PENDING → PUBLISHING → PUBLISHED
                   → 失败后 PENDING
                   → 超过次数 DEAD + dead_letter_records
 ```

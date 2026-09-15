@@ -3,13 +3,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
-from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.core.enums import RiskLevel, ToolJobKind
-from app.models.entities import PsychologicalReport, ToolAuditRecord, ToolJob
+from app.models.entities import PsychologicalReport, ToolAuditRecord, ToolJob, now
 
 
 @dataclass(frozen=True)
@@ -100,7 +99,7 @@ class ToolGovernanceService:
         record.reason = reason or record.reason
         if payload is not None:
             record.payload = _json(payload)
-        record.updated_at = datetime.utcnow()
+        record.updated_at = now()
         self.db.add(record)
         self.db.commit()
         return record

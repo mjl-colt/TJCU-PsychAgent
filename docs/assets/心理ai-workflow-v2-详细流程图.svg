@@ -252,7 +252,7 @@
   </g>
   <circle cx="215" cy="3012" r="25" fill="#348557"/><text x="215" y="3020" class="num">14</text>
   <text x="260" y="3000" class="h">业务保存完成 → COMPLETED → SSE 输出</text>
-  <text x="260" y="3037" class="body">chat_messages + Redis 记忆 + tool_jobs + materialization</text>
+  <text x="260" y="3037" class="body">chat_messages + Redis 记忆 + tool_jobs/outbox + materialization</text>
 
   <g filter="url(#shadow)">
     <rect x="1250" y="2800" width="420" height="265" rx="20" fill="#EEE9FA" stroke="#8C7DB8" stroke-width="2"/>
@@ -260,9 +260,9 @@
   <text x="1285" y="2843" class="dbH">最终业务存储</text>
   <text x="1285" y="2880" class="dbT">MySQL chat_messages：正式回复</text>
   <text x="1285" y="2912" class="dbT">MySQL materializations：落地收据</text>
-  <text x="1285" y="2944" class="dbT">MySQL tool_jobs：后台任务队列</text>
-  <text x="1285" y="2976" class="dbT">Redis：近期聊天记忆</text>
-  <text x="1285" y="3008" class="dbT">checkpoint：stage=COMPLETED</text>
+  <text x="1285" y="2944" class="dbT">MySQL tool_jobs：工具状态/重试</text>
+  <text x="1285" y="2976" class="dbT">MySQL tool_outbox + Redis Stream：可靠投递</text>
+  <text x="1285" y="3008" class="dbT">Redis：近期聊天记忆；checkpoint：COMPLETED</text>
   <path d="M1070 3012 L1245 2940" class="audit"/>
 
   <rect x="80" y="3110" width="1640" height="45" rx="16" fill="#17385F"/>
